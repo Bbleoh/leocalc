@@ -1,0 +1,1430 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leo-Calc Ultimate | Acoustic Engineer</title>
+    <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+    <script src="https://unpkg.com/recharts@2.10.3/umd/Recharts.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&display=swap');
+        * { box-sizing: border-box; }
+        body { margin: 0; background: #050905; color: #e8f4e8; font-family: 'IBM Plex Mono', monospace; font-size: 15px; }
+        input, select {
+            background: #0b1a0b;
+            border: 1px solid #3a7a3a;
+            color: #c8eec8;
+            padding: 9px 11px;
+            border-radius: 4px;
+            width: 100%;
+            font-family: inherit;
+            font-size: 15px;
+            outline: none;
+        }
+        input::placeholder { color: #3a5a3a; }
+        input:focus, select:focus { border-color: #6ac86a; background: #0e200e; }
+        select option { background: #0b1a0b; color: #c8eec8; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo } = React;
+        const { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceArea, ReferenceLine } = window.Recharts;
+
+        // ─── DATABASE — da Sabine.xlsx + catalogo esteso ─────────────────────────────
+        // Fonte: foglio Sabine.xlsx (Foglio1, righe 8–17) + integrazioni
+        // Bande: 63 Hz stimata/interpolata dove non presente nel foglio
+        const MATERIALS = {
+            // ── dal foglio Sabine.xlsx ──────────────────────────────────────────────
+            "Apertura condotti di ventilazione":             {63:1.15,125:1.15,250:0.80,500:0.80,1000:0.80,2000:1.25,4000:1.25, src:"Sabine.xlsx"},
+            "Apertura del proscenio":                        {63:0.25,125:0.30,250:0.35,500:0.40,1000:0.45,2000:0.50,4000:0.55, src:"Sabine.xlsx"},
+            "Ghiaia spessore 150 mm":                        {63:0.10,125:0.15,250:0.30,500:0.80,1000:0.42,2000:1.01,4000:1.12, src:"Sabine.xlsx"},
+            "Sabbia asciutta 150 mm":                        {63:0.15,125:0.24,250:0.34,500:0.45,1000:1.02,2000:1.16,4000:1.35, src:"Sabine.xlsx"},
+            "Intonaco acustico 10 mm (a parete)":            {63:0.05,125:0.08,250:0.15,500:0.30,1000:0.50,2000:0.60,4000:0.70, src:"Sabine.xlsx"},
+            "Intonaco / Marmo / Piastrelle":                 {63:0.01,125:0.01,250:0.01,500:0.02,1000:0.02,2000:0.02,4000:0.03, src:"Sabine.xlsx"},
+            "Legno parquet su cls":                          {63:0.04,125:0.04,250:0.04,500:0.07,1000:0.06,2000:0.06,4000:0.07, src:"Sabine.xlsx"},
+            "Piastrelle/linoleum/gomma su cls":              {63:0.02,125:0.02,250:0.03,500:0.03,1000:0.03,2000:0.03,4000:0.02, src:"Sabine.xlsx"},
+            "Superfici compatte e dure":                     {63:0.02,125:0.02,250:0.02,500:0.03,1000:0.03,2000:0.04,4000:0.05, src:"Sabine.xlsx"},
+            "Pannelli legno vibranti (intercapedine aria)":  {63:0.50,125:0.40,250:0.20,500:0.12,1000:0.07,2000:0.05,4000:0.05, src:"Sabine.xlsx"},
+            // ── altri materiali comuni ──────────────────────────────────────────────
+            "Calcestruzzo grezzo":          {63:0.02,125:0.02,250:0.03,500:0.03,1000:0.03,2000:0.04,4000:0.05},
+            "Calcestruzzo verniciato":      {63:0.01,125:0.01,250:0.01,500:0.02,1000:0.02,2000:0.02,4000:0.03},
+            "Mattone intonacato":           {63:0.01,125:0.01,250:0.02,500:0.02,1000:0.03,2000:0.04,4000:0.05},
+            "Mattone a vista":              {63:0.02,125:0.03,250:0.03,500:0.04,1000:0.05,2000:0.07,4000:0.07},
+            "Vetro singolo":                {63:0.35,125:0.25,250:0.18,500:0.12,1000:0.07,2000:0.04,4000:0.03},
+            "Vetro doppio":                 {63:0.10,125:0.07,250:0.05,500:0.03,1000:0.02,2000:0.02,4000:0.02},
+            "Legno pannello 10mm":          {63:0.30,125:0.25,250:0.20,500:0.17,1000:0.15,2000:0.10,4000:0.08},
+            "Moquette spessa":              {63:0.02,125:0.05,250:0.14,500:0.37,1000:0.60,2000:0.65,4000:0.72},
+            "Moquette sottile":             {63:0.01,125:0.02,250:0.05,500:0.15,1000:0.30,2000:0.40,4000:0.50},
+            "Gesso / Cartongesso":          {63:0.14,125:0.10,250:0.06,500:0.05,1000:0.04,2000:0.03,4000:0.03},
+            "Tende pesanti":                {63:0.05,125:0.07,250:0.13,500:0.30,1000:0.55,2000:0.70,4000:0.70},
+            "Tende leggere":                {63:0.03,125:0.04,250:0.07,500:0.15,1000:0.35,2000:0.45,4000:0.50},
+            "Soffitto forato mineral":      {63:0.30,125:0.45,250:0.60,500:0.75,1000:0.80,2000:0.80,4000:0.75},
+        };
+
+        // Pannelli acustici — da Sabine.xlsx (righe 19–22) + catalogo esteso
+        // Fonte: foglio Sabine.xlsx — α misurati in situ, Q.tà in pezzi da 0,25 mq
+        const PANELS = {
+            // ── dal foglio Sabine.xlsx ──────────────────────────────────────────────
+            "Poliuretano 0,25 mq/pz":           {63:0.29,125:0.29,250:0.35,500:0.42,1000:0.70,2000:0.92,4000:0.79, type:"absorber", src:"Sabine.xlsx"},
+            "Legno microforato 0,25 mq/pz":     {63:0.40,125:0.40,250:0.45,500:0.75,1000:0.30,2000:0.20,4000:0.15, type:"absorber", src:"Sabine.xlsx"},
+            "Tessuto 0,25 mq/pz":               {63:0.10,125:0.10,250:0.25,500:0.50,1000:0.82,2000:1.00,4000:0.90, type:"absorber", src:"Sabine.xlsx"},
+            "Bass trap angolari (tessuto)":      {63:0.60,125:0.60,250:0.40,500:0.10,1000:0.10,2000:0.10,4000:0.10, type:"absorber", src:"Sabine.xlsx"},
+            // ── catalogo esteso ─────────────────────────────────────────────────────
+            "Lana di roccia 50mm":               {63:0.10,125:0.25,250:0.60,500:0.95,1000:1.00,2000:1.00,4000:1.00, type:"absorber"},
+            "Lana di roccia 100mm":              {63:0.25,125:0.55,250:0.90,500:1.00,1000:1.00,2000:1.00,4000:1.00, type:"absorber"},
+            "Schiuma acustica 50mm":             {63:0.05,125:0.10,250:0.25,500:0.60,1000:0.95,2000:1.00,4000:1.00, type:"absorber"},
+            "Pannello microforato poliacrilato":  {63:0.05,125:0.15,250:0.45,500:0.80,1000:0.85,2000:0.80,4000:0.75, type:"absorber"},
+            "Pannello riflettente MDF 18mm":     {63:0.25,125:0.15,250:0.10,500:0.08,1000:0.06,2000:0.05,4000:0.04, type:"reflector"},
+            "Diffusore QRD Skyline":             {63:0.05,125:0.10,250:0.20,500:0.40,1000:0.60,2000:0.70,4000:0.75, type:"diffuser"},
+            "Bass trap lana roccia 150mm":       {63:0.50,125:0.80,250:0.95,500:1.00,1000:1.00,2000:1.00,4000:1.00, type:"absorber"},
+        };
+
+        const BANDS    = [63, 125, 250, 500, 1000, 2000, 4000];
+        // Bande presenti nel foglio Sabine (senza 63 Hz — usate per display αS misurato)
+        const BANDS_S  = [125, 250, 500, 1000, 2000, 4000];
+        const SURF_DEF = ["Pavimento","Soffitto","Parete Frontale","Parete Posteriore","Parete Sinistra","Parete Destra"];
+        const C        = 343;
+        const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+
+        // ─── MATH ────────────────────────────────────────────────────────────────────
+
+        function roomModes(L, W, H) {
+            const modes = [];
+            for (let nx=0; nx<=4; nx++) for (let ny=0; ny<=4; ny++) for (let nz=0; nz<=4; nz++) {
+                if (!nx && !ny && !nz) continue;
+                const f = (C/2) * Math.sqrt((nx/L)**2 + (ny/W)**2 + (nz/H)**2);
+                if (f < 20 || f > 500) continue;
+                const a = [nx>0, ny>0, nz>0].filter(Boolean).length;
+                const type = a===1 ? "assiale" : a===2 ? "tangenziale" : "obliquo";
+                const axis = nx>0&&ny===0&&nz===0?"L" : ny>0&&nx===0&&nz===0?"W" : nz>0&&nx===0&&ny===0?"H" : "mix";
+                modes.push({ nx, ny, nz, freq: Math.round(f*10)/10, type, axis });
+            }
+            return modes.sort((a,b) => a.freq - b.freq);
+        }
+
+        function absorption(surfaces) {
+            const sa = {};
+            BANDS.forEach(f => { sa[f] = 0; });
+            surfaces.forEach(s => {
+                const m = MATERIALS[s.material]; if (!m) return;
+                const a = parseFloat(s.area) || 0;
+                BANDS.forEach(f => { sa[f] += m[f] * a; });
+            });
+            return sa;
+        }
+
+        function rt60calc(V, sa) {
+            const r = {};
+            BANDS.forEach(f => { r[f] = sa[f] > 0 ? Math.round(0.161*V/sa[f]*100)/100 : 0; });
+            return r;
+        }
+
+        // Formula di Eyring: RT = 0.161·V / (-S·ln(1-ᾱ))
+        // ᾱ = αS_tot / S_tot   (coefficiente medio pesato per area)
+        function rt60eyring(V, sa, Stot) {
+            const r = {};
+            BANDS.forEach(f => {
+                const aSab = sa[f] || 0;
+                const aBar = Stot > 0 ? Math.min(aSab / Stot, 0.9999) : 0;
+                const denom = -Stot * Math.log(1 - aBar);
+                r[f] = denom > 0 ? Math.round(0.161 * V / denom * 100) / 100 : 0;
+            });
+            return r;
+        }
+
+        // αS ricavato da misurazioni fonometriche: αS = 0.161·V / RT_misurato
+        // measurements = { 125:[v1,v2,...], 250:[...], ... }
+        function rt60fromMeasurements(measurements) {
+            const rt = {};
+            BANDS_S.forEach(f => {
+                const vals = (measurements[f] || []).filter(v => v > 0);
+                if (vals.length) rt[f] = Math.round(vals.reduce((a,b) => a+b, 0) / vals.length * 1000) / 1000;
+            });
+            return rt; // RT medio misurato per banda
+        }
+        function saFromRT(V, rt) {
+            const sa = {};
+            BANDS_S.forEach(f => { sa[f] = rt[f] > 0 ? Math.round(0.161 * V / rt[f] * 1000) / 1000 : 0; });
+            return sa;
+        }
+
+        // Superficie totale della stanza data L,W,H
+        function roomSurface(L, W, H) { return 2*(L*W + L*H + W*H); }
+
+        function rt60ideal(V, wet) {
+            const base = 0.25 * Math.cbrt(V), fac = 0.7 + wet * 2;
+            const r = {};
+            BANDS.forEach(f => {
+                const lb = f<=125 ? 1.2 : f<=250 ? 1.1 : 1;
+                r[f] = Math.round(base * fac * lb * 100) / 100;
+            });
+            return r;
+        }
+
+        function interpRT(rt, freq) {
+            if (freq <= BANDS[0]) return rt[BANDS[0]] || 0.5;
+            if (freq >= BANDS[BANDS.length-1]) return rt[BANDS[BANDS.length-1]] || 0.3;
+            for (let i=0; i<BANDS.length-1; i++) {
+                if (freq >= BANDS[i] && freq <= BANDS[i+1]) {
+                    const t = (freq - BANDS[i]) / (BANDS[i+1] - BANDS[i]);
+                    return (rt[BANDS[i]]||0.5)*(1-t) + (rt[BANDS[i+1]]||0.3)*t;
+                }
+            }
+            return 0.5;
+        }
+
+        function roomResponse(L, W, H, rt) {
+            const modes = roomModes(L, W, H);
+            const sX = W/2, sY = L*0.38, sZ = H*0.45;
+            const freqs = [];
+            for (let i=0; i<=120; i++) freqs.push(Math.round(20 * Math.pow(200, i/120) * 10) / 10);
+            const raw = freqs.map(f => {
+                let re=0, im=0;
+                modes.forEach(m => {
+                    const fn = m.freq;
+                    const rtv = interpRT(rt, fn);
+                    const eta = rtv > 0 ? 6.91 / (Math.PI * fn * rtv) : 0.05;
+                    const px = m.nx > 0 ? Math.cos(Math.PI * m.nx * sX / W) : 1;
+                    const py = m.ny > 0 ? Math.cos(Math.PI * m.ny * sY / L) : 1;
+                    const pz = m.nz > 0 ? Math.cos(Math.PI * m.nz * sZ / H) : 1;
+                    const sp = px * py * pz;
+                    const amp = m.type==="assiale" ? 1 : m.type==="tangenziale" ? 0.45 : 0.2;
+                    const r2 = f / fn;
+                    const D = (1 - r2*r2)**2 + (eta*r2)**2;
+                    re += amp * sp * (1 - r2*r2) / D;
+                    im += amp * sp * (-eta*r2) / D;
+                });
+                const mag = Math.sqrt(re*re + im*im);
+                return { freq: f, dB: mag > 1e-12 ? 20*Math.log10(mag) : -60 };
+            });
+            const valid = raw.filter(d => isFinite(d.dB) && d.dB > -59);
+            if (!valid.length) return raw.map(d => ({...d, dB:0}));
+            const mean = valid.reduce((s,d) => s+d.dB, 0) / valid.length;
+            return raw.map(d => ({...d, dB: Math.round((d.dB - mean)*10)/10}));
+        }
+
+        function schroeder(V, rt500) {
+            return Math.round(2000 * Math.sqrt((rt500||0.5) / V));
+        }
+
+        function freqToNote(freq) {
+            const st = Math.round(12 * Math.log2(freq/440)) + 57;
+            return { note: NOTE_NAMES[((st%12)+12)%12], oct: Math.floor(st/12), st };
+        }
+        function noteLabel(freq) { const {note, oct} = freqToNote(freq); return `${note}${oct}`; }
+
+        // ─── PIANO ───────────────────────────────────────────────────────────────────
+
+        function Piano({ eqData }) {
+            const BLACKS = new Set([1,3,6,8,10]);
+            const s0 = Math.ceil(12*Math.log2(20/440)+57);
+            const s1 = Math.floor(12*Math.log2(4000/440)+57);
+            const keys = [];
+            for (let st=s0; st<=s1; st++) {
+                const freq = 440 * Math.pow(2, (st-57)/12);
+                const pos = ((st%12)+12)%12;
+                keys.push({ st, freq, isBlack: BLACKS.has(pos), ...freqToNote(freq) });
+            }
+            const whites = keys.filter(k => !k.isBlack);
+            const totalW = whites.length;
+
+            function lookup(freq) {
+                if (!eqData || !eqData.length) return 0;
+                let best = eqData[0], bd = Infinity;
+                for (const d of eqData) { const dd = Math.abs(d.freq - freq); if (dd < bd) { bd = dd; best = d; } }
+                return best.dB || 0;
+            }
+            function dBColor(db) {
+                const c = Math.max(-15, Math.min(15, db));
+                if (c >= 0) { const t = c/15; return `rgba(255,${Math.round(120-t*80)},${Math.round(60-t*50)},${0.5+t*0.5})`; }
+                const t = -c/15; return `rgba(${Math.round(20+t*20)},${Math.round(130+t*80)},${Math.round(90+t*130)},${0.45+t*0.45})`;
+            }
+            const wPct = 100 / totalW;
+            const bPct = wPct * 0.65;
+
+            return (
+                <div style={{ marginTop:14 }}>
+                    <div style={{ position:"relative", height:50, width:"100%", overflow:"hidden" }}>
+                        {whites.map((k,i) => {
+                            const db = lookup(k.freq);
+                            return (
+                                <div key={k.st} style={{
+                                    position:"absolute", left:`${i*wPct}%`, width:`${wPct-0.15}%`, height:"100%",
+                                    background: dBColor(db), border:"1px solid #1a2a1a", borderRadius:1,
+                                    display:"flex", alignItems:"flex-end", justifyContent:"center", paddingBottom:3,
+                                }}>
+                                    {k.note==="C" && <span style={{ fontSize:9, color:"#3a6a3a", fontFamily:"monospace" }}>{k.note}{k.oct}</span>}
+                                </div>
+                            );
+                        })}
+                        {keys.filter(k => k.isBlack).map(k => {
+                            const wIdx = whites.findIndex(w => w.st === k.st+1);
+                            if (wIdx < 0) return null;
+                            const db = lookup(k.freq);
+                            return (
+                                <div key={k.st} style={{
+                                    position:"absolute",
+                                    left:`${wIdx*wPct - bPct/2}%`,
+                                    width:`${bPct}%`, height:"60%",
+                                    background: dBColor(db), border:"1px solid #080e08", borderRadius:1,
+                                    zIndex:2,
+                                }} />
+                            );
+                        })}
+                    </div>
+                    <div style={{ fontSize:13, color:"#4a7a4a", marginTop:6, display:"flex", gap:14 }}>
+                        <span><span style={{ color:"#ff7040" }}>■</span> picco</span>
+                        <span><span style={{ color:"#40c8cc" }}>■</span> buca</span>
+                    </div>
+                </div>
+            );
+        }
+
+        // ─── HELPERS ─────────────────────────────────────────────────────────────────
+
+        function Sec({ title, children }) {
+            return (
+                <div style={{ display:"flex", flexDirection:"column", gap:12, marginBottom:24 }}>
+                    <div style={{ fontSize:13, letterSpacing:5, color:"#5aaa5a", textTransform:"uppercase",
+                        borderBottom:"1px solid #1a3a1a", paddingBottom:8, fontWeight:700 }}>{title}</div>
+                    {children}
+                </div>
+            );
+        }
+        function LL({ color, label, dashed }) {
+            return (
+                <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+                    <div style={{ width:24, height:2, background:dashed?"none":color, borderTop:dashed?`2px dashed ${color}`:"none" }} />
+                    <span style={{ fontSize:15, color:"#7aaa7a" }}>{label}</span>
+                </div>
+            );
+        }
+        function Empty() {
+            return (
+                <div style={{ color:"#3a6a3a", textAlign:"center", padding:60, fontSize:17, letterSpacing:2 }}>
+                    Inserisci le dimensioni nella tab MISURAZIONI
+                </div>
+            );
+        }
+
+        // Btn eliminazione — rosso scuro
+        function DelBtn({ onClick }) {
+            return (
+                <button onClick={onClick} style={{
+                    background:"#2a0a0a", border:"1px solid #6a2020", color:"#cc5050",
+                    borderRadius:4, padding:"0 10px", height:38, fontSize:16, cursor:"pointer",
+                    fontFamily:"inherit", flexShrink:0, lineHeight:1,
+                }}>✕</button>
+            );
+        }
+
+        const inp = {
+            background:"#0b1a0b", border:"1px solid #3a7a3a", borderRadius:4, color:"#c8eec8",
+            padding:"9px 11px", fontSize:15, fontFamily:"'IBM Plex Mono','Courier New',monospace",
+            width:"100%", outline:"none",
+        };
+        const sel = { ...inp, fontSize:14 };
+
+        // ─── SPECTRAL PANEL SIZING ───────────────────────────────────────────────────
+        // Per ogni pannello: calcola quanti m² coprono il deficit su TUTTE le bande.
+        // Strategia: il pannello deve eliminare il deficit nella banda più critica
+        // rispetto alla sua curva α. Usiamo il massimo di (deficit_f / α_f) su tutte le bande.
+        // Ritorna { m2, bottleneck, coveragePct } dove coveragePct[f] indica quanto il
+        // pannello (dimensionato su bottleneck) copre il deficit alla banda f (0–100%).
+        function panelSizing(props, neededSA) {
+            let worst = 0, bottleneck = 500;
+            BANDS.forEach(f => {
+                const deficit = neededSA[f] || 0;
+                if (deficit <= 0) return;
+                const alpha = props[f] || 0.001;
+                const req = deficit / alpha;
+                if (req > worst) { worst = req; bottleneck = f; }
+            });
+            const m2 = Math.ceil(worst);
+            // quanto copre il pannello (m2) banda per banda rispetto al deficit
+            const coveragePct = {};
+            BANDS.forEach(f => {
+                const deficit = neededSA[f] || 0;
+                if (deficit <= 0) { coveragePct[f] = 100; return; }
+                coveragePct[f] = Math.min(100, Math.round(m2 * (props[f]||0) / deficit * 100));
+            });
+            return { m2, bottleneck, coveragePct };
+        }
+
+        // Simula RT60 dopo aver aggiunto m2 m² di un pannello
+        function rtAfterPanel(V, sa, props, m2) {
+            const newSA = {};
+            BANDS.forEach(f => { newSA[f] = (sa[f] || 0) + m2 * (props[f] || 0); });
+            return rt60calc(V, newSA);
+        }
+
+        // ─── MINI SPARKBAR ───────────────────────────────────────────────────────────
+        // Barra orizzontale multi-banda: mostra α del pannello vs deficit normalizzato
+        function SparkBars({ props, neededSA, m2 }) {
+            const maxNeed = Math.max(...BANDS.map(f => neededSA[f] || 0), 0.01);
+            return (
+                <div style={{ display:"flex", gap:3, alignItems:"flex-end", height:44, marginTop:6 }}>
+                    {BANDS.map(f => {
+                        const deficit = neededSA[f] || 0;
+                        const coverage = Math.min(1, m2 * (props[f]||0) / Math.max(deficit, 0.001));
+                        const deficitH = Math.round((deficit / maxNeed) * 38);
+                        const coverH   = Math.round(coverage * deficitH);
+                        const ok = coverage >= 0.99;
+                        return (
+                            <div key={f} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:1 }}>
+                                <div style={{ width:"100%", position:"relative", height:38 }}>
+                                    {/* deficit bar (grigio) */}
+                                    <div style={{ position:"absolute", bottom:0, width:"100%", height:deficitH,
+                                        background:"#1e3e1e", borderRadius:"2px 2px 0 0" }} />
+                                    {/* coverage bar (verde/giallo) */}
+                                    <div style={{ position:"absolute", bottom:0, width:"100%", height:coverH,
+                                        background: ok ? "#5aaa5a" : coverage>0.6 ? "#aaaa40" : "#aa4a20",
+                                        borderRadius:"2px 2px 0 0", opacity:0.9 }} />
+                                </div>
+                                <span style={{ fontSize:10, color:"#3a6a3a", letterSpacing:0 }}>
+                                    {f>=1000 ? (f/1000)+"k" : f}
+                                </span>
+                            </div>
+                        );
+                    })}
+                </div>
+            );
+        }
+
+        // ─── PANEL CARD ──────────────────────────────────────────────────────────────
+        function PanelCard({ name, props, neededSA, sa, rtI, V, isSelected, onClick }) {
+            const { m2, bottleneck, coveragePct } = panelSizing(props, neededSA);
+            const anyDeficit = BANDS.some(f => (neededSA[f]||0) > 0);
+            if (!anyDeficit || m2 <= 0) return null;
+            const tc = props.type==="absorber"?"#6aaa6a":props.type==="reflector"?"#aaaa6a":"#6a9acc";
+            const rtPost = rtAfterPanel(V, sa, props, m2);
+            // banda più critica dopo il trattamento
+            const worstResidual = BANDS.reduce((acc, f) => {
+                const r = rtPost[f]||0, i = rtI[f]||0;
+                return (r - i > acc.d) ? { f, d: r-i } : acc;
+            }, { f:500, d:-Infinity });
+
+            return (
+                <div onClick={onClick} style={{
+                    background: isSelected ? "#0e220e" : "#090f09",
+                    border:`1px solid ${isSelected ? tc : "#1e3e1e"}`,
+                    borderLeft:`4px solid ${tc}`,
+                    borderRadius:6, padding:"12px 14px", marginBottom:8, cursor:"pointer",
+                    transition:"background 0.15s",
+                }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                        <div style={{ flex:1 }}>
+                            <div style={{ fontSize:15, color:"#c8eec8", fontWeight:600 }}>{name}</div>
+                            <div style={{ fontSize:12, color:tc, letterSpacing:1, textTransform:"uppercase", marginTop:2 }}>
+                                {props.type}
+                                {bottleneck && <span style={{ color:"#4a7a4a", textTransform:"none", letterSpacing:0, marginLeft:8 }}>
+                                    · collo di bottiglia: {bottleneck}Hz
+                                </span>}
+                            </div>
+                        </div>
+                        <div style={{ textAlign:"right", flexShrink:0, marginLeft:12 }}>
+                            <div style={{ fontSize:24, fontWeight:700, color: tc }}>{m2} m²</div>
+                            <div style={{ fontSize:11, color:"#3a6a3a" }}>necessari</div>
+                        </div>
+                    </div>
+
+                    {/* Sparkbars: copertura per banda */}
+                    <SparkBars props={props} neededSA={neededSA} m2={m2} />
+
+                    {/* Legenda mini */}
+                    <div style={{ display:"flex", gap:14, fontSize:11, color:"#3a6a3a", marginTop:4 }}>
+                        <span><span style={{ color:"#1e3e1e", fontSize:14 }}>█</span> deficit SA</span>
+                        <span><span style={{ color:"#5aaa5a", fontSize:14 }}>█</span> coperto &nbsp;</span>
+                        <span><span style={{ color:"#aaaa40", fontSize:14 }}>█</span> parz. &nbsp;</span>
+                        <span><span style={{ color:"#aa4a20", fontSize:14 }}>█</span> insufficiente</span>
+                    </div>
+
+                    {/* RT60 post-trattamento quando selezionato */}
+                    {isSelected && (
+                        <div style={{ marginTop:14, borderTop:"1px solid #1a3a1a", paddingTop:12 }}>
+                            <div style={{ fontSize:12, letterSpacing:3, color:"#4a8a4a", textTransform:"uppercase", marginBottom:8 }}>
+                                RT60 simulato dopo {m2} m² di {name}
+                            </div>
+                            <div style={{ height:170 }}>
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <LineChart
+                                        data={BANDS.map(f => ({ f:`${f}Hz`, Attuale:rtAfterPanel(V,sa,props,0)[f]||0, Simulato:rtPost[f]||0, Ideale:rtI[f]||0 }))}
+                                        margin={{ top:4, right:8, bottom:4, left:0 }}>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#0f1e0f" />
+                                        <XAxis dataKey="f" tick={{ fill:"#4a8a4a", fontSize:12 }} />
+                                        <YAxis tick={{ fill:"#4a8a4a", fontSize:12 }} unit="s" domain={[0,"auto"]} />
+                                        <Tooltip contentStyle={{ background:"#0b1a0b", border:"1px solid #2a5a2a", fontSize:13, color:"#c8eec8" }} />
+                                        <Line type="monotone" dataKey="Attuale"  stroke="#3a5a3a" strokeWidth={2} dot={{ r:3 }} strokeDasharray="4 3" />
+                                        <Line type="monotone" dataKey="Simulato" stroke={tc}      strokeWidth={2.5} dot={{ r:4 }} />
+                                        <Line type="monotone" dataKey="Ideale"   stroke="#e8b040" strokeWidth={2} dot={{ r:3 }} strokeDasharray="6 3" />
+                                    </LineChart>
+                                </ResponsiveContainer>
+                            </div>
+                            <div style={{ display:"flex", gap:16, marginTop:6, flexWrap:"wrap" }}>
+                                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                                    <div style={{ width:20, height:2, borderTop:"2px dashed #3a5a3a" }} />
+                                    <span style={{ fontSize:12, color:"#5a8a5a" }}>Attuale</span>
+                                </div>
+                                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                                    <div style={{ width:20, height:2, background:tc }} />
+                                    <span style={{ fontSize:12, color:"#5a8a5a" }}>Simulato (+{m2}m²)</span>
+                                </div>
+                                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                                    <div style={{ width:20, height:2, borderTop:"2px dashed #e8b040" }} />
+                                    <span style={{ fontSize:12, color:"#5a8a5a" }}>Ideale</span>
+                                </div>
+                            </div>
+                            {worstResidual.d > 0.05 && (
+                                <div style={{ fontSize:12, color:"#aa8a30", marginTop:8, background:"#1a1500", border:"1px solid #3a3000", borderRadius:4, padding:"6px 10px" }}>
+                                    ⚠ Ancora in eccesso a {worstResidual.f}Hz (+{worstResidual.d.toFixed(2)}s)
+                                    — considerare trattamento combinato o superficie maggiore.
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // ─── TREATMENT SECTION ───────────────────────────────────────────────────────
+        function TreatmentSection({ neededSA, sa, rtI, V, Fs }) {
+            const [selected, setSelected] = useState(null);
+
+            const totalDeficit = BANDS.reduce((s, f) => s + (neededSA[f]||0), 0);
+            const maxDeficitBand = BANDS.reduce((best, f) => (neededSA[f]||0) > (neededSA[best]||0) ? f : best, BANDS[0]);
+
+            return (
+                <Sec title="TRATTAMENTO IDEALE CONSIGLIATO">
+                    {/* Sommario deficit per banda */}
+                    <div style={{ background:"#080e08", border:"1px solid #1a3a1a", borderRadius:6, padding:"12px 16px", marginBottom:8 }}>
+                        <div style={{ fontSize:12, letterSpacing:3, color:"#4a8a4a", textTransform:"uppercase", marginBottom:10 }}>Deficit SA per banda (m²Sab)</div>
+                        <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:5 }}>
+                            {BANDS.map(f => {
+                                const d = neededSA[f] || 0;
+                                const isMax = f === maxDeficitBand && d > 0;
+                                return (
+                                    <div key={f} style={{ textAlign:"center", background: isMax?"#1a2a0a":"#0a140a",
+                                        border:`1px solid ${isMax?"#4a7a2a":"#152515"}`, borderRadius:4, padding:"6px 2px" }}>
+                                        <div style={{ fontSize:11, color:"#4a7a4a" }}>{f>=1000?(f/1000)+"k":f}Hz</div>
+                                        <div style={{ fontSize:15, fontWeight:700, color: d>0?"#cc8830":"#3a7a3a", marginTop:2 }}>
+                                            {d > 0 ? d.toFixed(1) : "✓"}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        {totalDeficit > 0 && (
+                            <div style={{ fontSize:13, color:"#5a8a4a", marginTop:10 }}>
+                                Banda critica: <strong style={{ color:"#cc9930" }}>{maxDeficitBand} Hz</strong>
+                                &nbsp;·&nbsp; Deficit totale: <strong style={{ color:"#c8eec8" }}>{totalDeficit.toFixed(1)} m²Sab</strong>
+                            </div>
+                        )}
+                        {totalDeficit <= 0 && (
+                            <div style={{ fontSize:13, color:"#5aaa5a", marginTop:8 }}>✓ Nessun deficit — RT60 già entro target su tutte le bande</div>
+                        )}
+                    </div>
+
+                    {/* Card per ogni pannello */}
+                    <div style={{ fontSize:12, color:"#3a6a3a", marginBottom:10, letterSpacing:1 }}>
+                        Clicca un pannello per vedere la simulazione RT60 post-trattamento
+                    </div>
+                    {Object.entries(PANELS).map(([name, props]) => (
+                        <PanelCard key={name} name={name} props={props}
+                            neededSA={neededSA} sa={sa} rtI={rtI} V={V}
+                            isSelected={selected===name}
+                            onClick={() => setSelected(s => s===name ? null : name)}
+                        />
+                    ))}
+
+                    {/* Sommario per tipologia */}
+                    <div style={{ marginTop:16, borderTop:"1px solid #1a3a1a", paddingTop:16 }}>
+                        <div style={{ fontSize:13, letterSpacing:4, color:"#4a8a4a", textTransform:"uppercase", marginBottom:12 }}>
+                            Minimo per tipologia (peggio caso banda)
+                        </div>
+                        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12 }}>
+                            {[{type:"absorber",label:"Fonoassorbenti",color:"#6aaa6a"},
+                              {type:"reflector",label:"Riflettenti",color:"#aaaa6a"},
+                              {type:"diffuser",label:"Diffusori",color:"#6a9acc"}
+                            ].map(({type,label,color}) => {
+                                const entries = Object.entries(PANELS).filter(([,p]) => p.type===type);
+                                // miglior pannello del tipo = quello che richiede meno m²
+                                let minM2 = Infinity, bestName = "";
+                                entries.forEach(([n, p]) => {
+                                    const { m2 } = panelSizing(p, neededSA);
+                                    if (m2 > 0 && m2 < minM2) { minM2 = m2; bestName = n; }
+                                });
+                                return (
+                                    <div key={type} style={{ background:"#0a180a", border:`1px solid ${color}55`,
+                                        borderRadius:8, padding:"14px 12px", textAlign:"center" }}>
+                                        <div style={{ fontSize:12, color, letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>{label}</div>
+                                        <div style={{ fontSize:26, fontWeight:700, color:"#c8eec8" }}>
+                                            {minM2 === Infinity ? "—" : minM2}
+                                        </div>
+                                        <div style={{ fontSize:13, color:"#5a8a5a" }}>m²</div>
+                                        {bestName && <div style={{ fontSize:11, color:"#3a6a3a", marginTop:4, lineHeight:1.4 }}>{bestName}</div>}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        <div style={{ fontSize:13, color:"#4a7a4a", marginTop:12, lineHeight:1.8 }}>
+                            Assorbitori → angoli e punti di pressione modi assiali.<br/>
+                            Riflettenti → soffitto fra monitor e sweet spot.<br/>
+                            Diffusori → parete posteriore.
+                        </div>
+                    </div>
+                </Sec>
+            );
+        }
+
+        // ─── APP ─────────────────────────────────────────────────────────────────────
+
+        const TABS = [
+            { id:"misurazioni", label:"Misurazioni" },
+            { id:"risultati",   label:"Analisi & Correzione" },
+            { id:"modi",        label:"Modi Propri" }
+        ];
+
+        function App() {
+            const [tab, setTab]         = useState("misurazioni");
+            const [dims, setDims]       = useState({ L:"5", W:"4", H:"3" });
+            const [wetness, setWetness] = useState(0.2);
+            const [formula, setFormula] = useState("sabine"); // "sabine" | "eyring"
+
+            // Superfici: ogni elemento ha { id, label, material, area, fixed, parentId? }
+            // parentId=null → superficie principale; parentId=X → sotto-superficie di X
+            const [surfaces, setSurfaces] = useState(() => {
+                const parquet = "Legno parquet su cls";
+                const intonaco = "Intonaco / Marmo / Piastrelle";
+                return [
+                    { id:"Pavimento",         label:"Pavimento",         material:parquet,   area:"", fixed:true,  parentId:null },
+                    { id:"Soffitto",          label:"Soffitto",          material:intonaco,  area:"", fixed:true,  parentId:null },
+                    { id:"Parete Frontale",   label:"Parete Frontale",   material:intonaco,  area:"", fixed:true,  parentId:null },
+                    { id:"Parete Posteriore", label:"Parete Posteriore", material:intonaco,  area:"", fixed:true,  parentId:null },
+                    { id:"Parete Sinistra",   label:"Parete Sinistra",   material:intonaco,  area:"", fixed:true,  parentId:null },
+                    { id:"Parete Destra",     label:"Parete Destra",     material:intonaco,  area:"", fixed:true,  parentId:null },
+                ];
+            });
+            // pannelli extra (aggiuntivi, con area e tipo selezionabile)
+            const [extraPanels, setExtraPanels] = useState([]);
+
+            // Misurazioni fonometriche: 3 misure per banda (125–4000 Hz)
+            const [measurements, setMeasurements] = useState({
+                125:  ["1.51","1.86","1.70"],
+                250:  ["1.70","1.74","1.42"],
+                500:  ["1.73","1.74","1.67"],
+                1000: ["1.57","1.45","1.57"],
+                2000: ["1.47","1.47","1.54"],
+                4000: ["1.35","1.35","1.34"],
+            });
+            const [showMeas, setShowMeas]     = useState(false);
+            const [measActive, setMeasActive] = useState(true); // toggle influenza misurazioni
+
+            const [showEQ, setShowEQ]   = useState(true);
+            const [noteAxis, setNoteAxis] = useState(false);
+            const [mType, setMType]     = useState("all");
+            const [mAxis, setMAxis]     = useState("all");
+
+            const L = parseFloat(dims.L) || 0;
+            const W = parseFloat(dims.W) || 0;
+            const H = parseFloat(dims.H) || 0;
+            const V = L * W * H;
+            const Stot = roomSurface(L, W, H);
+            const ready = V > 0;
+
+            const autoA = useMemo(() => ({
+                "Pavimento":         (L*W).toFixed(1),
+                "Soffitto":          (L*W).toFixed(1),
+                "Parete Frontale":   (W*H).toFixed(1),
+                "Parete Posteriore": (W*H).toFixed(1),
+                "Parete Sinistra":   (L*H).toFixed(1),
+                "Parete Destra":     (L*H).toFixed(1),
+            }), [L, W, H]);
+
+            // ── calcolo assorbimento con gerarchia padre/figlio ──────────────────────
+            // Per ogni superficie principale: area_netta = area_padre - Σ(area_figli)
+            // Ogni sotto-superficie contribuisce con il proprio materiale sulla propria area.
+            const sa = useMemo(() => {
+                const result = {};
+                BANDS.forEach(f => { result[f] = 0; });
+
+                // Superfici principali (parentId === null)
+                const parents = surfaces.filter(s => !s.parentId);
+                parents.forEach(parent => {
+                    const parentArea = parseFloat(parent.area) || parseFloat(autoA[parent.label]) || 0;
+                    const children   = surfaces.filter(s => s.parentId === parent.id);
+                    const childAreaTotal = children.reduce((acc, c) => acc + (parseFloat(c.area) || 0), 0);
+                    const netArea = Math.max(0, parentArea - childAreaTotal);
+
+                    // contributo netto del padre
+                    const mP = MATERIALS[parent.material];
+                    if (mP && netArea > 0) BANDS.forEach(f => { result[f] += mP[f] * netArea; });
+
+                    // contributo di ogni sotto-superficie col suo materiale
+                    children.forEach(child => {
+                        const cArea = parseFloat(child.area) || 0;
+                        const mC = MATERIALS[child.material];
+                        if (mC && cArea > 0) BANDS.forEach(f => { result[f] += mC[f] * cArea; });
+                    });
+                });
+
+                // pannelli extra
+                extraPanels.forEach(ep => {
+                    const tp = PANELS[ep.panel], ta = parseFloat(ep.area) || 0;
+                    if (tp && ta > 0) BANDS.forEach(f => { result[f] += tp[f] * ta; });
+                });
+                return result;
+            }, [surfaces, extraPanels, autoA]);
+
+            // RT60 Sabine e Eyring
+            const rtSabine = useMemo(() => ready ? rt60calc(V, sa)         : {}, [V, sa, ready]);
+            const rtEyring = useMemo(() => ready ? rt60eyring(V, sa, Stot) : {}, [V, sa, Stot, ready]);
+            const rtC      = formula === "eyring" ? rtEyring : rtSabine;
+
+            // RT60 da misurazioni fonometriche (media M1/M2/M3)
+            const rtMeasRaw = useMemo(() => rt60fromMeasurements(measurements), [measurements]);
+            const rtMeas    = measActive ? rtMeasRaw : {}; // disabilitato → dict vuoto
+            const saMeas    = useMemo(() => ready ? saFromRT(V, rtMeasRaw) : {}, [V, rtMeasRaw, ready]);
+
+            const rtI    = useMemo(() => ready ? rt60ideal(V, wetness) : {}, [V, wetness, ready]);
+            const modes  = useMemo(() => ready ? roomModes(L, W, H)   : [], [L, W, H, ready]);
+            const eqData = useMemo(() => ready ? roomResponse(L, W, H, rtC) : [], [L, W, H, rtC, ready]);
+            const Fs     = useMemo(() => ready ? schroeder(V, rtC[500]) : 200, [V, rtC, ready]);
+
+            const neededSA = useMemo(() => {
+                const n = {};
+                BANDS.forEach(f => {
+                    const c  = rtC[f] > 0 ? (0.161*V) / rtC[f] : 0;
+                    const id = rtI[f] > 0 ? (0.161*V) / rtI[f] : 0;
+                    n[f] = Math.max(0, Math.round((id-c)*10)/10);
+                });
+                return n;
+            }, [rtC, rtI, V]);
+
+            // Chart data: Sabine + Eyring + misurato (se attivo) + ideale
+            const rt60Chart = BANDS.map(f => ({
+                f: `${f}Hz`,
+                Sabine:   rtSabine[f] || 0,
+                Eyring:   rtEyring[f] || 0,
+                Misurato: measActive ? (rtMeasRaw[f] || null) : null,
+                Ideale:   rtI[f]      || 0,
+            }));
+
+            const hzTicks   = [20, 50, 100, 200, 500, 1000, 2000, 4000];
+            const noteTicks = useMemo(() => {
+                const t = [], s0=Math.ceil(12*Math.log2(20/440)+57), s1=Math.floor(12*Math.log2(4000/440)+57);
+                for (let s=s0; s<=s1; s+=5) t.push(Math.round(440*Math.pow(2,(s-57)/12)*10)/10);
+                return t;
+            }, []);
+
+            // ── helpers superfici ────────────────────────────────────────────────────
+            function addSurface() {
+                setSurfaces(ss => [...ss, {
+                    id:`extra_${Date.now()}`, label:"Superficie aggiuntiva",
+                    material:Object.keys(MATERIALS)[0], area:"", fixed:false, parentId:null
+                }]);
+            }
+            function removeSurface(id) {
+                // rimuove anche eventuali figli
+                setSurfaces(ss => ss.filter(s => s.id !== id && s.parentId !== id));
+            }
+            function addSubSurface(parentId) {
+                setSurfaces(ss => {
+                    // se il padre non ha area esplicita, la scriviamo subito con il valore auto
+                    const parent = ss.find(s => s.id === parentId);
+                    const needsFill = parent && !parent.area;
+                    const autoVal = needsFill ? (autoA[parent.label] || "") : null;
+                    return [
+                        ...ss.map(s => (needsFill && s.id === parentId) ? {...s, area: autoVal} : s),
+                        { id:`sub_${Date.now()}`, label:"Sotto-superficie",
+                          material:Object.keys(MATERIALS)[0], area:"", fixed:false, parentId }
+                    ];
+                });
+            }
+            function removeSubSurface(id) { setSurfaces(ss => ss.filter(s => s.id !== id)); }
+            function updateSurface(id, patch) {
+                setSurfaces(ss => ss.map(s => s.id===id ? {...s,...patch} : s));
+            }
+
+            // helpers pannelli extra
+            function addPanel() {
+                setExtraPanels(eps => [...eps, { id:Date.now(), panel:Object.keys(PANELS)[0], area:"" }]);
+            }
+            function removePanel(id) { setExtraPanels(eps => eps.filter(p => p.id !== id)); }
+
+            // update singola misurazione
+            function setMeasVal(band, idx, val) {
+                setMeasurements(m => {
+                    const cur = [...(m[band] || ["","",""])];
+                    cur[idx] = val;
+                    return { ...m, [band]: cur };
+                });
+            }
+
+            const wetnessLabel = wetness<=0.15 ? "Anechoico" : wetness<=0.2 ? "Control Room" : "Live Room";
+            const F = 15;
+
+            return (
+                <div style={{ minHeight:"100vh", background:"#050905", color:"#e8f4e8",
+                    fontFamily:"'IBM Plex Mono','Courier New',monospace", fontSize:F, padding:"0 0 80px" }}>
+
+                    {/* ── HEADER ── */}
+                    <div style={{ background:"#0a160a", borderBottom:"2px solid #2a5a2a",
+                        padding:"18px 28px", display:"flex", alignItems:"center", gap:20, flexWrap:"wrap" }}>
+                        {/* Logo */}
+                        <div style={{ marginRight:"auto" }}>
+                            <div style={{ fontSize:12, letterSpacing:6, color:"#5aaa5a", textTransform:"uppercase", marginBottom:3 }}>acoustic calculator</div>
+                            <div style={{ fontSize:32, fontWeight:700, color:"#c8eec8", letterSpacing:-1, lineHeight:1 }}>Leo-Calc</div>
+                        </div>
+
+                        {/* Wetness — in header, a sinistra del badge volume */}
+                        <div style={{ display:"flex", flexDirection:"column", gap:4, minWidth:200 }}>
+                            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                                <span style={{ fontSize:12, letterSpacing:3, color:"#5aaa5a", textTransform:"uppercase" }}>Wetness</span>
+                                <div style={{ background:"#0e200e", border:"1px solid #3a7a3a", borderRadius:4,
+                                    padding:"2px 10px", fontSize:17, fontWeight:700, color:"#c8eec8", minWidth:52, textAlign:"center" }}>
+                                    {wetness.toFixed(2)}
+                                </div>
+                            </div>
+                            <input type="range" min="0.1" max="0.3" step="0.01" value={wetness}
+                                onChange={e => setWetness(parseFloat(e.target.value))}
+                                style={{ width:"100%", accentColor:"#7ac87a", cursor:"pointer" }} />
+                            <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:"#4a8a4a" }}>
+                                <span>Dry</span><span style={{ color:"#7ac87a" }}>{wetnessLabel}</span><span>Wet</span>
+                            </div>
+                        </div>
+
+                        {/* Badge volume */}
+                        {ready && (
+                            <div style={{ background:"#0e200e", border:"1px solid #3a8a3a",
+                                borderRadius:6, padding:"10px 18px", fontSize:17, color:"#8ae08a",
+                                fontWeight:700, whiteSpace:"nowrap" }}>
+                                {V.toFixed(1)} m³ · Fs {Fs} Hz
+                            </div>
+                        )}
+                    </div>
+
+                    {/* ── TABS ── */}
+                    <div style={{ display:"flex", borderBottom:"2px solid #1a3a1a", padding:"0 28px", background:"#070e07" }}>
+                        {TABS.map(t => (
+                            <button key={t.id} onClick={() => setTab(t.id)} style={{
+                                background:"none", border:"none", fontFamily:"inherit",
+                                borderBottom: tab===t.id ? "3px solid #7ac87a" : "3px solid transparent",
+                                color: tab===t.id ? "#c8eec8" : "#4a7a4a",
+                                padding:"16px 22px 13px", fontSize:16, letterSpacing:2,
+                                textTransform:"uppercase", cursor:"pointer", fontWeight: tab===t.id ? 700 : 400,
+                            }}>{t.label}</button>
+                        ))}
+                    </div>
+
+                    <div style={{ padding:"28px", maxWidth:1000, margin:"0 auto" }}>
+
+                        {/* ══ MISURAZIONI ══ */}
+                        {tab === "misurazioni" && (
+                            <div style={{ display:"flex", flexDirection:"column", gap:28 }}>
+
+                                <Sec title="DIMENSIONI STANZA">
+                                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:14 }}>
+                                        {[["L","Lunghezza"],["W","Larghezza"],["H","Altezza"]].map(([k, lbl]) => (
+                                            <label key={k} style={{ display:"flex", flexDirection:"column", gap:7 }}>
+                                                <span style={{ fontSize:13, letterSpacing:3, color:"#6aaa6a", textTransform:"uppercase" }}>{lbl} (m)</span>
+                                                <input type="number" min="0" step="0.1" value={dims[k]}
+                                                    onChange={e => setDims(d => ({...d, [k]: e.target.value}))}
+                                                    style={inp} placeholder="0.0" />
+                                            </label>
+                                        ))}
+                                    </div>
+                                    {ready && (
+                                        <div style={{ fontSize:14, color:"#5a9a5a", marginTop:4, background:"#0a180a", padding:"8px 12px", borderRadius:4, border:"1px solid #1e3e1e" }}>
+                                            {L.toFixed(1)} × {W.toFixed(1)} × {H.toFixed(1)} m &nbsp;·&nbsp; L/W: {(L/W).toFixed(2)} &nbsp;·&nbsp; L/H: {(L/H).toFixed(2)}
+                                        </div>
+                                    )}
+                                </Sec>
+
+                                {/* SUPERFICI */}
+                                <Sec title="MATERIALI SUPERFICI">
+                                    {/* Render solo le superfici principali (parentId === null) */}
+                                    {surfaces.filter(s => !s.parentId).map(parent => {
+                                        const children = surfaces.filter(s => s.parentId === parent.id);
+                                        const parentAutoArea = autoA[parent.label] || "";
+                                        const parentArea = parseFloat(parent.area) || parseFloat(parentAutoArea) || 0;
+                                        const childSum   = children.reduce((a,c) => a + (parseFloat(c.area)||0), 0);
+                                        const netArea    = Math.max(0, parentArea - childSum);
+                                        const hasOverlap = childSum > parentArea && parentArea > 0;
+
+                                        return (
+                                            <div key={parent.id} style={{ marginBottom:10 }}>
+                                                {/* ── riga superficie principale ── */}
+                                                <div style={{ display:"grid", gridTemplateColumns:"160px 1fr 90px auto auto", gap:8, alignItems:"center" }}>
+                                                    {parent.fixed
+                                                        ? <span style={{ fontSize:F, color:"#7ab87a", fontWeight:600 }}>{parent.label}</span>
+                                                        : <input value={parent.label}
+                                                            onChange={e => updateSurface(parent.id, {label:e.target.value})}
+                                                            style={{ ...inp, fontSize:13 }} placeholder="Nome superficie" />
+                                                    }
+                                                    <select value={parent.material}
+                                                        onChange={e => updateSurface(parent.id, {material:e.target.value})}
+                                                        style={sel}>
+                                                        {Object.keys(MATERIALS).map(m => <option key={m}>{m}</option>)}
+                                                    </select>
+                                                    <input type="number" min="0" step="0.1" value={parent.area}
+                                                        onChange={e => updateSurface(parent.id, {area:e.target.value})}
+                                                        style={{ ...inp, textAlign:"right" }}
+                                                        placeholder={parentAutoArea || "m²"} />
+                                                    {/* pulsante aggiungi sotto-superficie */}
+                                                    <button onClick={() => addSubSurface(parent.id)} title="Aggiungi sotto-superficie" style={{
+                                                        background:"#091409", border:"1px solid #2a5a2a", color:"#5aaa5a",
+                                                        borderRadius:4, width:36, height:36, fontSize:18, cursor:"pointer",
+                                                        fontFamily:"inherit", flexShrink:0, lineHeight:1, padding:0,
+                                                    }}>⊕</button>
+                                                    {parent.fixed
+                                                        ? <div style={{ width:36 }} />
+                                                        : <DelBtn onClick={() => removeSurface(parent.id)} />
+                                                    }
+                                                </div>
+
+                                                {/* info area netta se ci sono figli */}
+                                                {children.length > 0 && (
+                                                    <div style={{ display:"flex", gap:16, fontSize:12, marginTop:3, paddingLeft:168, color: hasOverlap?"#cc5030":"#4a8a4a" }}>
+                                                        <span>Area lorda: {parentArea.toFixed(1)} m²</span>
+                                                        <span>Sotto-sup: −{childSum.toFixed(1)} m²</span>
+                                                        <span style={{ color: hasOverlap?"#cc5030":"#7ac87a", fontWeight:600 }}>
+                                                            {hasOverlap ? "⚠ eccede!" : `Netta: ${netArea.toFixed(1)} m²`}
+                                                        </span>
+                                                    </div>
+                                                )}
+
+                                                {/* ── sotto-superfici ── */}
+                                                {children.map(child => (
+                                                    <div key={child.id} style={{ display:"grid", gridTemplateColumns:"24px 144px 1fr 90px auto", gap:8, alignItems:"center", marginTop:6 }}>
+                                                        {/* barra laterale indentazione */}
+                                                        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", height:"100%" }}>
+                                                            <div style={{ width:1, flex:1, background:"#2a5a2a" }} />
+                                                            <div style={{ width:10, height:1, background:"#2a5a2a" }} />
+                                                        </div>
+                                                        <input value={child.label}
+                                                            onChange={e => updateSurface(child.id, {label:e.target.value})}
+                                                            style={{ ...inp, fontSize:13, borderColor:"#2a5a2a", background:"#060d06" }}
+                                                            placeholder="es. Finestra" />
+                                                        <select value={child.material}
+                                                            onChange={e => updateSurface(child.id, {material:e.target.value})}
+                                                            style={{ ...sel, borderColor:"#2a5a2a", background:"#060d06" }}>
+                                                            {Object.keys(MATERIALS).map(m => <option key={m}>{m}</option>)}
+                                                        </select>
+                                                        <input type="number" min="0" step="0.1" value={child.area}
+                                                            onChange={e => updateSurface(child.id, {area:e.target.value})}
+                                                            style={{ ...inp, textAlign:"right", borderColor:"#2a5a2a", background:"#060d06" }}
+                                                            placeholder="m²" />
+                                                        <DelBtn onClick={() => removeSubSurface(child.id)} />
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        );
+                                    })}
+                                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:8 }}>
+                                        <span style={{ fontSize:13, color:"#4a7a4a" }}>Aree calcolate automaticamente se vuote · ⊕ per aggiungere sotto-superfici</span>
+                                        <button onClick={addSurface} style={{
+                                            background:"#0b1e0b", border:"1px solid #3a7a3a", color:"#8ae08a",
+                                            borderRadius:4, padding:"8px 16px", fontSize:14, cursor:"pointer",
+                                            fontFamily:"inherit", letterSpacing:1,
+                                        }}>+ Superficie</button>
+                                    </div>
+                                </Sec>
+
+                                {/* PANNELLI / ASSORBENTI EXTRA */}
+                                <Sec title="ASSORBENTI INSTALLATI">
+                                    {extraPanels.length === 0 && (
+                                        <div style={{ fontSize:14, color:"#3a6a3a", fontStyle:"italic" }}>
+                                            Nessun pannello aggiunto. Usa il pulsante per aggiungerne.
+                                        </div>
+                                    )}
+                                    {extraPanels.map((ep) => {
+                                        const tp = PANELS[ep.panel];
+                                        const tc = tp.type==="absorber"?"#6aaa6a":tp.type==="reflector"?"#aaaa6a":"#6a9acc";
+                                        return (
+                                            <div key={ep.id} style={{ display:"grid", gridTemplateColumns:"1fr 110px auto", gap:10, alignItems:"center", marginBottom:8,
+                                                background:"#0a180a", border:"1px solid #1e3e1e", borderRadius:6, padding:"10px 14px" }}>
+                                                <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                                                    <select value={ep.panel}
+                                                        onChange={e => setExtraPanels(eps => eps.map(p => p.id===ep.id ? {...p, panel:e.target.value} : p))}
+                                                        style={sel}>
+                                                        {Object.keys(PANELS).map(m => <option key={m}>{m}</option>)}
+                                                    </select>
+                                                    <span style={{ fontSize:13, color:tc, letterSpacing:1, textTransform:"uppercase" }}>
+                                                        {tp.type} &nbsp;·&nbsp; α@500Hz: {tp[500]}
+                                                    </span>
+                                                </div>
+                                                <label style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                                                    <span style={{ fontSize:12, color:"#4a8a4a", letterSpacing:2 }}>m²</span>
+                                                    <input type="number" min="0" step="0.5" value={ep.area}
+                                                        onChange={e => setExtraPanels(eps => eps.map(p => p.id===ep.id ? {...p, area:e.target.value} : p))}
+                                                        style={{ ...inp, textAlign:"right" }} placeholder="0" />
+                                                </label>
+                                                <DelBtn onClick={() => removePanel(ep.id)} />
+                                            </div>
+                                        );
+                                    })}
+                                    <div style={{ display:"flex", justifyContent:"flex-end", marginTop:4 }}>
+                                        <button onClick={addPanel} style={{
+                                            background:"#0b1e0b", border:"1px solid #3a7a3a", color:"#8ae08a",
+                                            borderRadius:4, padding:"8px 16px", fontSize:14, cursor:"pointer",
+                                            fontFamily:"inherit", letterSpacing:1,
+                                        }}>+ Pannello / Assorbente</button>
+                                    </div>
+                                </Sec>
+
+                                <Sec title="MISURAZIONI FONOMETRICHE (RT60)">
+                                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+                                        <span style={{ fontSize:13, color: measActive?"#7ac87a":"#4a6a4a" }}>
+                                            {measActive ? "Attive — influenzano il grafico RT60" : "Disabilitate — non influenzano i calcoli"}
+                                        </span>
+                                        <div style={{ display:"flex", gap:8 }}>
+                                            {/* Toggle ON/OFF */}
+                                            <button onClick={() => setMeasActive(v=>!v)} style={{
+                                                background: measActive ? "#0e220e" : "#1a0a0a",
+                                                border:`2px solid ${measActive?"#5aaa5a":"#6a2020"}`,
+                                                color: measActive ? "#8ae08a" : "#cc5050",
+                                                borderRadius:4, padding:"5px 16px", fontSize:13,
+                                                cursor:"pointer", fontFamily:"inherit", fontWeight:700,
+                                                letterSpacing:1,
+                                            }}>{measActive ? "● ON" : "○ OFF"}</button>
+                                            {/* Espandi griglia */}
+                                            <button onClick={() => setShowMeas(v=>!v)} style={{
+                                                background: showMeas?"#0e200e":"#0a140a",
+                                                border:`1px solid ${showMeas?"#5a9a5a":"#2a4a2a"}`,
+                                                color: showMeas?"#8ae08a":"#4a7a4a",
+                                                borderRadius:4, padding:"5px 14px", fontSize:13,
+                                                cursor:"pointer", fontFamily:"inherit",
+                                            }}>{showMeas ? "Chiudi ▲" : "Griglia ▼"}</button>
+                                        </div>
+                                    </div>
+
+                                    {/* Riepilogo αS misurato sempre visibile se attive */}
+                                    {measActive && ready && BANDS_S.some(f => rtMeasRaw[f]) && (
+                                        <div style={{ display:"grid", gridTemplateColumns:"repeat(6,1fr)", gap:5, marginBottom:8 }}>
+                                            {BANDS_S.map(f => {
+                                                const rt = rtMeasRaw[f], aSab = saMeas[f];
+                                                if (!rt) return (
+                                                    <div key={f} style={{ background:"#0a120a", border:"1px solid #162016", borderRadius:4, padding:"6px 2px", textAlign:"center" }}>
+                                                        <div style={{ fontSize:11, color:"#3a5a3a" }}>{f>=1000?(f/1000)+"k":f}Hz</div>
+                                                        <div style={{ fontSize:12, color:"#2a4a2a" }}>—</div>
+                                                    </div>
+                                                );
+                                                return (
+                                                    <div key={f} style={{ background:"#0a180a", border:"1px solid #1a3a1a", borderRadius:4, padding:"6px 2px", textAlign:"center" }}>
+                                                        <div style={{ fontSize:11, color:"#4a8a4a" }}>{f>=1000?(f/1000)+"k":f}Hz</div>
+                                                        <div style={{ fontSize:14, fontWeight:700, color:"#7ac87a" }}>{rt.toFixed(2)}s</div>
+                                                        <div style={{ fontSize:10, color:"#3a6a3a" }}>αS {aSab.toFixed(1)}</div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+
+                                    {showMeas && (
+                                        <div style={{ background:"#080e08", border:"1px solid #1a3a1a", borderRadius:6, padding:"14px 16px" }}>
+                                            {/* Header bande */}
+                                            <div style={{ display:"grid", gridTemplateColumns:"60px repeat(6,1fr)", gap:6, marginBottom:6 }}>
+                                                <span style={{ fontSize:12, color:"#3a6a3a" }}></span>
+                                                {BANDS_S.map(f => (
+                                                    <span key={f} style={{ fontSize:12, color:"#5a9a5a", textAlign:"center" }}>
+                                                        {f>=1000?(f/1000)+"kHz":f+"Hz"}
+                                                    </span>
+                                                ))}
+                                            </div>
+                                            {/* 3 righe di misura */}
+                                            {[0,1,2].map(idx => (
+                                                <div key={idx} style={{ display:"grid", gridTemplateColumns:"60px repeat(6,1fr)", gap:6, marginBottom:6, alignItems:"center" }}>
+                                                    <span style={{ fontSize:13, color:"#4a7a4a", fontWeight:600 }}>M{idx+1}</span>
+                                                    {BANDS_S.map(f => (
+                                                        <input key={f} type="number" step="0.01" min="0"
+                                                            value={measurements[f]?.[idx] ?? ""}
+                                                            onChange={e => setMeasVal(f, idx, e.target.value)}
+                                                            style={{ ...inp, fontSize:13, textAlign:"center", padding:"6px 4px" }}
+                                                            placeholder="—" />
+                                                    ))}
+                                                </div>
+                                            ))}
+                                            {/* Media */}
+                                            <div style={{ display:"grid", gridTemplateColumns:"60px repeat(6,1fr)", gap:6, marginTop:8, borderTop:"1px solid #1a2a1a", paddingTop:8 }}>
+                                                <span style={{ fontSize:12, color:"#5aaa5a", fontWeight:700 }}>Media</span>
+                                                {BANDS_S.map(f => {
+                                                    const rt = rtMeasRaw[f];
+                                                    return (
+                                                        <span key={f} style={{ fontSize:13, color:"#7ac87a", textAlign:"center", fontWeight:700 }}>
+                                                            {rt ? rt.toFixed(3) : "—"}
+                                                        </span>
+                                                    );
+                                                })}
+                                            </div>
+                                            {ready && (
+                                                <div style={{ display:"grid", gridTemplateColumns:"60px repeat(6,1fr)", gap:6, marginTop:4 }}>
+                                                    <span style={{ fontSize:11, color:"#3a6a3a" }}>αS mis.</span>
+                                                    {BANDS_S.map(f => {
+                                                        const aS = saMeas[f];
+                                                        return (
+                                                            <span key={f} style={{ fontSize:11, color:"#4a8a4a", textAlign:"center" }}>
+                                                                {aS ? aS.toFixed(2) : "—"}
+                                                            </span>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </Sec>
+
+                                {/* FORMULA SELECTOR */}
+                                <Sec title="FORMULA DI CALCOLO">
+                                    <div style={{ display:"flex", gap:10 }}>
+                                        {[
+                                            { id:"sabine", label:"Sabine", desc:"RT = 0.161·V / αS", detail:"Ambienti con α < 0.3 (stanze vive)" },
+                                            { id:"eyring", label:"Eyring", desc:"RT = 0.161·V / (-S·ln(1-ᾱ))", detail:"Ambienti più assorbenti o α medio > 0.3" },
+                                        ].map(opt => (
+                                            <div key={opt.id} onClick={() => setFormula(opt.id)} style={{
+                                                flex:1, cursor:"pointer",
+                                                background: formula===opt.id ? "#0e220e" : "#080e08",
+                                                border:`2px solid ${formula===opt.id?"#5aaa5a":"#1a3a1a"}`,
+                                                borderRadius:6, padding:"12px 14px",
+                                            }}>
+                                                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5 }}>
+                                                    <div style={{ width:14, height:14, borderRadius:"50%",
+                                                        background: formula===opt.id?"#5aaa5a":"transparent",
+                                                        border:`2px solid ${formula===opt.id?"#5aaa5a":"#3a6a3a"}`,
+                                                        flexShrink:0 }} />
+                                                    <span style={{ fontSize:16, fontWeight:700, color:"#c8eec8" }}>{opt.label}</span>
+                                                </div>
+                                                <div style={{ fontSize:13, color:"#7ac87a", fontFamily:"monospace", marginBottom:4 }}>{opt.desc}</div>
+                                                <div style={{ fontSize:12, color:"#4a7a4a" }}>{opt.detail}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </Sec>
+
+                                <button onClick={() => setTab("risultati")} style={{
+                                    background:"#0e200e", border:"2px solid #5a9a5a", color:"#c8eec8",
+                                    padding:"16px 0", fontSize:17, letterSpacing:4, textTransform:"uppercase",
+                                    cursor:"pointer", borderRadius:6, width:"100%", fontFamily:"inherit", fontWeight:700,
+                                }}>Calcola →</button>
+                            </div>
+                        )}
+
+                        {/* ══ RISULTATI ══ */}
+                        {tab === "risultati" && (
+                            <div style={{ display:"flex", flexDirection:"column", gap:28 }}>
+                                {!ready && <Empty />}
+                                {ready && <>
+
+                                    <Sec title="RT60 — CONFRONTO FORMULE">
+                                        {/* Formula badge */}
+                                        <div style={{ display:"flex", gap:8, marginBottom:10, alignItems:"center" }}>
+                                            <span style={{ fontSize:12, color:"#4a8a4a", letterSpacing:2 }}>FORMULA ATTIVA:</span>
+                                            {["sabine","eyring"].map(f => (
+                                                <button key={f} onClick={() => setFormula(f)} style={{
+                                                    background: formula===f ? "#0e220e" : "transparent",
+                                                    border:`1px solid ${formula===f?"#5aaa5a":"#2a4a2a"}`,
+                                                    color: formula===f ? "#c8eec8" : "#4a7a4a",
+                                                    borderRadius:4, padding:"4px 14px", fontSize:13,
+                                                    cursor:"pointer", fontFamily:"inherit", textTransform:"uppercase",
+                                                }}>{f}</button>
+                                            ))}
+                                            <span style={{ fontSize:12, color:"#3a6a3a", marginLeft:"auto" }}>
+                                                {formula==="sabine"
+                                                    ? "0.161·V / αS_tot"
+                                                    : "0.161·V / (−S·ln(1−ᾱ))"}
+                                            </span>
+                                        </div>
+
+                                        <div style={{ height:260 }}>
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <LineChart data={rt60Chart} margin={{ top:4, right:12, bottom:4, left:0 }}>
+                                                    <CartesianGrid strokeDasharray="3 3" stroke="#122012" />
+                                                    <XAxis dataKey="f" tick={{ fill:"#5a9a5a", fontSize:13 }} />
+                                                    <YAxis tick={{ fill:"#5a9a5a", fontSize:13 }} unit="s" domain={[0,"auto"]} />
+                                                    <Tooltip contentStyle={{ background:"#0b1a0b", border:"1px solid #3a7a3a", fontSize:13, color:"#c8eec8" }} />
+                                                    <Line type="monotone" dataKey="Sabine"   stroke="#7ac87a" strokeWidth={formula==="sabine"?3:1.5}
+                                                        dot={{ r:4, fill:"#7ac87a" }} strokeDasharray={formula==="sabine"?"":"4 3"} />
+                                                    <Line type="monotone" dataKey="Eyring"   stroke="#44aaff" strokeWidth={formula==="eyring"?3:1.5}
+                                                        dot={{ r:4, fill:"#44aaff" }} strokeDasharray={formula==="eyring"?"":"4 3"} />
+                                                    <Line type="monotone" dataKey="Misurato" stroke="#ff8844" strokeWidth={measActive?2.5:1}
+                                                        dot={{ r:measActive?5:3, fill:"#ff8844" }} connectNulls={false} opacity={measActive?1:0.25} />
+                                                    <Line type="monotone" dataKey="Ideale"   stroke="#e8b040" strokeWidth={2}
+                                                        strokeDasharray="6 3" dot={{ r:3, fill:"#e8b040" }} />
+                                                </LineChart>
+                                            </ResponsiveContainer>
+                                        </div>
+                                        <div style={{ display:"flex", gap:16, marginTop:8, flexWrap:"wrap", alignItems:"center" }}>
+                                            <LL color="#7ac87a" label="Sabine" dashed={formula!=="sabine"} />
+                                            <LL color="#44aaff" label="Eyring" dashed={formula!=="eyring"} />
+                                            <div style={{ display:"flex", alignItems:"center", gap:7, opacity: measActive?1:0.3 }}>
+                                                <div style={{ width:24, height:2, background:"#ff8844" }} />
+                                                <span style={{ fontSize:15, color:"#7aaa7a" }}>
+                                                    Misurato {measActive?"":"(OFF)"}
+                                                </span>
+                                            </div>
+                                            <LL color="#e8b040" label="Ideale" dashed />
+                                        </div>
+
+                                        {/* Tabella per banda con tutte le curve */}
+                                        <div style={{ overflowX:"auto", marginTop:14 }}>
+                                            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
+                                                <thead>
+                                                    <tr>
+                                                        <td style={{ padding:"5px 8px", color:"#4a8a4a", fontSize:12 }}>Hz</td>
+                                                        {BANDS.map(f => (
+                                                            <td key={f} style={{ padding:"5px 4px", color:"#5a9a5a", textAlign:"center", fontSize:12 }}>
+                                                                {f>=1000?(f/1000)+"k":f}
+                                                            </td>
+                                                        ))}
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {[
+                                                        { label:"Sabine", color:"#7ac87a", data: BANDS.map(f=>rtSabine[f]) },
+                                                        { label:"Eyring", color:"#44aaff", data: BANDS.map(f=>rtEyring[f]) },
+                                                        { label:"Mis.",   color:"#ff8844", data: BANDS.map(f=>rtMeasRaw[f]), dimmed: !measActive },
+                                                        { label:"Ideale", color:"#e8b040", data: BANDS.map(f=>rtI[f]) },
+                                                    ].map(row => (
+                                                        <tr key={row.label} style={{ opacity: row.dimmed ? 0.3 : 1 }}>
+                                                            <td style={{ padding:"5px 8px", color:row.color, fontSize:12, fontWeight:600 }}>{row.label}</td>
+                                                            {row.data.map((v, i) => (
+                                                                <td key={i} style={{ padding:"5px 4px", textAlign:"center",
+                                                                    color: v ? row.color : "#2a4a2a",
+                                                                    background: i%2===0?"#080e08":"#0a140a",
+                                                                    fontSize:14, fontWeight: row.label===formula?"700":"400" }}>
+                                                                    {v ? v.toFixed(2) : "—"}
+                                                                </td>
+                                                            ))}
+                                                        </tr>
+                                                    ))}
+                                                    {/* riga delta attivo vs ideale */}
+                                                    <tr>
+                                                        <td style={{ padding:"5px 8px", color:"#6a6a3a", fontSize:11 }}>Δ attivo</td>
+                                                        {BANDS.map(f => {
+                                                            const d = (rtC[f]||0) - (rtI[f]||0);
+                                                            const ok = Math.abs(d)<0.1;
+                                                            return (
+                                                                <td key={f} style={{ padding:"5px 4px", textAlign:"center",
+                                                                    color: ok?"#6aba6a":d>0?"#cc6040":"#aaaa40",
+                                                                    fontSize:12, fontWeight:600 }}>
+                                                                    {ok ? "✓" : (d>0?"+":"")+d.toFixed(2)}
+                                                                </td>
+                                                            );
+                                                        })}
+                                                    </tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+
+                                        {/* αS Sabine per banda */}
+                                        {ready && (
+                                            <div style={{ marginTop:14, background:"#070d07", border:"1px solid #152515", borderRadius:6, padding:"10px 14px" }}>
+                                                <div style={{ fontSize:12, letterSpacing:3, color:"#3a7a3a", textTransform:"uppercase", marginBottom:8 }}>
+                                                    αS per banda (assorbimento calcolato)
+                                                </div>
+                                                <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:5 }}>
+                                                    {BANDS.map(f => (
+                                                        <div key={f} style={{ textAlign:"center" }}>
+                                                            <div style={{ fontSize:11, color:"#3a6a3a" }}>{f>=1000?(f/1000)+"k":f}Hz</div>
+                                                            <div style={{ fontSize:14, color:"#7ac87a", fontWeight:600 }}>{(sa[f]||0).toFixed(2)}</div>
+                                                            <div style={{ fontSize:10, color:"#2a5a2a" }}>m²Sab</div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                <div style={{ fontSize:12, color:"#3a6a3a", marginTop:6 }}>
+                                                    S tot: {Stot.toFixed(1)} m² &nbsp;·&nbsp;
+                                                    ᾱ@500Hz: {Stot>0 ? ((sa[500]||0)/Stot).toFixed(3) : "—"} &nbsp;·&nbsp;
+                                                    V: {V.toFixed(1)} m³
+                                                </div>
+                                            </div>
+                                        )}
+                                    </Sec>
+
+                                    {/* EQ TOGGLE */}
+                                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                                        <span style={{ fontSize:14, letterSpacing:3, color:"#5aaa5a", textTransform:"uppercase", fontWeight:700 }}>
+                                            Risposta Frequenza — Sweet Spot
+                                        </span>
+                                        <button onClick={() => setShowEQ(v => !v)} style={{
+                                            background: showEQ?"#0e200e":"#0c0c0c",
+                                            border:`1px solid ${showEQ?"#5a9a5a":"#2a2a2a"}`,
+                                            color: showEQ?"#8ae08a":"#444",
+                                            padding:"6px 16px", fontSize:14, letterSpacing:2,
+                                            cursor:"pointer", borderRadius:4, textTransform:"uppercase", fontFamily:"inherit",
+                                        }}>{showEQ ? "ON" : "OFF"}</button>
+                                    </div>
+
+                                    {showEQ && (
+                                        <div style={{ background:"#070e07", border:"1px solid #1e3e1e", borderRadius:8, padding:18 }}>
+                                            <div style={{ display:"flex", gap:8, marginBottom:12, alignItems:"center" }}>
+                                                <span style={{ fontSize:13, color:"#4a8a4a", letterSpacing:2 }}>ASSE:</span>
+                                                {[{v:false,l:"Hz"},{v:true,l:"Note (⅕ semitono)"}].map(({v,l}) => (
+                                                    <button key={l} onClick={() => setNoteAxis(v)} style={{
+                                                        background: noteAxis===v ? "#0e200e" : "transparent",
+                                                        border:`1px solid ${noteAxis===v?"#5a9a5a":"#222"}`,
+                                                        color: noteAxis===v ? "#c8eec8" : "#4a7a4a",
+                                                        padding:"4px 14px", fontSize:13, cursor:"pointer",
+                                                        borderRadius:4, fontFamily:"inherit", textTransform:"uppercase",
+                                                    }}>{l}</button>
+                                                ))}
+                                            </div>
+
+                                            <div style={{ fontSize:13, color:"#4a8a4a", marginBottom:10 }}>
+                                                Sweet spot: {(W/2).toFixed(2)}m × {(L*0.38).toFixed(2)}m × {(H*0.45).toFixed(2)}m &nbsp;·&nbsp; Schroeder: {Fs} Hz
+                                            </div>
+
+                                            <div style={{ display:"flex", gap:12, flexWrap:"wrap", marginBottom:12 }}>
+                                                {[{id:"A",lo:20,hi:80,col:"#ff8844"},{id:"B",lo:80,hi:200,col:"#ffcc44"},
+                                                  {id:"C",lo:200,hi:1000,col:"#44aaff"},{id:"D",lo:1000,hi:4000,col:"#44ff88"}
+                                                ].map(r => (
+                                                    <div key={r.id} style={{ display:"flex", alignItems:"center", gap:6 }}>
+                                                        <div style={{ width:11, height:11, background:r.col+"99", borderRadius:2 }} />
+                                                        <span style={{ fontSize:13, color:"#5a9a5a" }}>{r.id} {r.lo}–{r.hi>=1000?r.hi/1000+"k":r.hi}Hz</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+
+                                            <div style={{ height:240 }}>
+                                                <ResponsiveContainer width="100%" height="100%">
+                                                    <LineChart data={eqData} margin={{ top:4, right:12, bottom:noteAxis?48:24, left:8 }}>
+                                                        <ReferenceArea x1={20}   x2={80}   fill="#ff884420" fillOpacity={1} />
+                                                        <ReferenceArea x1={80}   x2={200}  fill="#ffcc4420" fillOpacity={1} />
+                                                        <ReferenceArea x1={200}  x2={1000} fill="#44aaff18" fillOpacity={1} />
+                                                        <ReferenceArea x1={1000} x2={4000} fill="#44ff8818" fillOpacity={1} />
+                                                        <ReferenceLine x={80}   stroke="#ffffff15" strokeDasharray="4 4" />
+                                                        <ReferenceLine x={200}  stroke="#ffffff15" strokeDasharray="4 4" />
+                                                        <ReferenceLine x={1000} stroke="#ffffff15" strokeDasharray="4 4" />
+                                                        <ReferenceLine x={Fs}   stroke="#e8b04077" strokeDasharray="6 3" />
+                                                        <CartesianGrid strokeDasharray="3 3" stroke="#0f1e0f" />
+                                                        <XAxis dataKey="freq" type="number" scale="log"
+                                                            domain={[20,4000]}
+                                                            ticks={noteAxis ? noteTicks : hzTicks}
+                                                            tickFormatter={v => noteAxis ? noteLabel(v) : v>=1000?(v/1000)+"k":v+""}
+                                                            tick={{ fill:"#5a9a5a", fontSize:noteAxis?11:14 }}
+                                                            angle={noteAxis?-50:0} textAnchor={noteAxis?"end":"middle"}
+                                                            height={noteAxis?48:24} allowDataOverflow={false} />
+                                                        <YAxis tick={{ fill:"#5a9a5a", fontSize:14 }} unit="dB" domain={[-24,24]} />
+                                                        <Tooltip contentStyle={{ background:"#0b1a0b", border:"1px solid #3a7a3a", fontSize:14, color:"#c8eec8" }}
+                                                            formatter={v => [`${v} dB`,"Livello"]}
+                                                            labelFormatter={f => `${f} Hz · ${noteLabel(f)}`} />
+                                                        <ReferenceLine y={0} stroke="#2a5a2a" strokeDasharray="4 4" />
+                                                        <Line type="monotone" dataKey="dB" stroke="#3ae870" strokeWidth={2} dot={false} isAnimationActive={false} />
+                                                    </LineChart>
+                                                </ResponsiveContainer>
+                                            </div>
+
+                                            <Piano eqData={eqData} />
+                                        </div>
+                                    )}
+
+                                    {/* TRATTAMENTO */}
+                                    <TreatmentSection
+                                        neededSA={neededSA} sa={sa} rtI={rtI} V={V} Fs={Fs}
+                                    />
+                                </>}
+                            </div>
+                        )}
+
+                        {/* ══ MODI ══ */}
+                        {tab === "modi" && (
+                            <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+                                {!ready && <Empty />}
+                                {ready && (() => {
+                                    const regs = [
+                                        {id:"A",lo:20,  hi:80,  label:"Regione A — Modale Forte (20–80 Hz)",        color:"#ff8844"},
+                                        {id:"B",lo:80,  hi:200, label:"Regione B — Modale/Transizione (80–200 Hz)", color:"#ffcc44"},
+                                        {id:"C",lo:200, hi:500, label:"Regione C — Transizione (200–500 Hz)",       color:"#44aaff"},
+                                    ];
+                                    const filteredModes = modes.filter(m =>
+                                        (mType==="all" || m.type===mType) && (mAxis==="all" || m.axis===mAxis)
+                                    );
+                                    return <>
+                                        <div style={{ display:"flex", gap:12, marginBottom:6 }}>
+                                            <select onChange={e => setMType(e.target.value)} style={sel}>
+                                                <option value="all">Tutti i tipi</option>
+                                                <option value="assiale">Assiali</option>
+                                                <option value="tangenziale">Tangenziali</option>
+                                                <option value="obliquo">Obliqui</option>
+                                            </select>
+                                            <select onChange={e => setMAxis(e.target.value)} style={sel}>
+                                                <option value="all">Tutti gli assi</option>
+                                                <option value="L">Asse L</option>
+                                                <option value="W">Asse W</option>
+                                                <option value="H">Asse H</option>
+                                            </select>
+                                        </div>
+                                        <div style={{ fontSize:15, color:"#5a9a5a" }}>{filteredModes.length} modi · Schroeder: {Fs} Hz</div>
+                                        <div style={{ display:"flex", gap:18, flexWrap:"wrap", marginBottom:6 }}>
+                                            <LL color="#7ac87a" label="Assiale" />
+                                            <LL color="#e8b040" label="Tangenziale" />
+                                            <LL color="#5a9aaa" label="Obliquo" />
+                                        </div>
+                                        {regs.map(reg => {
+                                            const rm = filteredModes.filter(m => m.freq>=reg.lo && m.freq<reg.hi);
+                                            if (!rm.length) return null;
+                                            return (
+                                                <div key={reg.id}>
+                                                    <div style={{ display:"flex", alignItems:"center", gap:10, margin:"14px 0 8px" }}>
+                                                        <div style={{ width:4, height:20, background:reg.color, borderRadius:2, flexShrink:0 }} />
+                                                        <span style={{ fontSize:16, color:reg.color, fontWeight:700 }}>{reg.label}</span>
+                                                        <div style={{ flex:1, height:1, background:reg.color+"33" }} />
+                                                        <span style={{ fontSize:13, color:reg.color+"bb", flexShrink:0 }}>{rm.length} modi</span>
+                                                    </div>
+                                                    {rm.map((m, i) => {
+                                                        const col = m.type==="assiale"?"#7ac87a":m.type==="tangenziale"?"#e8b040":"#5a9aaa";
+                                                        const bw  = m.type==="assiale"?"100%":m.type==="tangenziale"?"58%":"32%";
+                                                        return (
+                                                            <div key={i} style={{
+                                                                display:"grid", gridTemplateColumns:"90px 100px 1fr 120px",
+                                                                alignItems:"center", gap:12, padding:"8px 14px",
+                                                                background:"#060d06", border:`1px solid ${col}33`,
+                                                                borderLeft:`3px solid ${col}`, borderRadius:4, marginBottom:5,
+                                                            }}>
+                                                                <span style={{ fontSize:17, fontWeight:700, color:col }}>{m.freq}<span style={{ fontSize:13, color:"#3a6a3a" }}> Hz</span></span>
+                                                                <span style={{ fontSize:13, color:"#4a8a4a" }}>({m.nx},{m.ny},{m.nz})</span>
+                                                                <div style={{ background:"#0f1a0f", borderRadius:3, height:6 }}>
+                                                                    <div style={{ width:bw, background:col+"99", height:"100%", borderRadius:3 }} />
+                                                                </div>
+                                                                <span style={{ fontSize:13, color:col, textAlign:"right", letterSpacing:1 }}>
+                                                                    {noteLabel(m.freq)} · {m.type.slice(0,3).toUpperCase()}
+                                                                </span>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            );
+                                        })}
+                                        {filteredModes.filter(m => m.freq>=500).length>0 && (
+                                            <div>
+                                                <div style={{ display:"flex", alignItems:"center", gap:10, margin:"14px 0 8px" }}>
+                                                    <div style={{ width:4, height:20, background:"#44ff88", borderRadius:2, flexShrink:0 }} />
+                                                    <span style={{ fontSize:16, color:"#44cc70", fontWeight:700 }}>Regione D — Diffuso (&gt;500 Hz)</span>
+                                                    <div style={{ flex:1, height:1, background:"#44cc7033" }} />
+                                                </div>
+                                                <div style={{ fontSize:15, color:"#3a7a3a", padding:"12px 16px",
+                                                    background:"#060d06", border:"1px dashed #1a3a1a", borderRadius:5, lineHeight:1.8 }}>
+                                                    Campo sonoro prevalentemente diffuso (Schroeder: {Fs} Hz).<br/>
+                                                    Il trattamento geometrico è più efficace del calcolo modale.
+                                                </div>
+                                            </div>
+                                        )}
+                                    </>;
+                                })()}
+                            </div>
+                        )}
+
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
