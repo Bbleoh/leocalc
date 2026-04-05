@@ -89,23 +89,74 @@
         // Bande presenti nel foglio Sabine (senza 63 Hz — usate per display αS misurato)
         const BANDS_S  = [125, 250, 500, 1000, 2000, 4000];
         const SURF_DEF = ["Pavimento","Soffitto","Parete Frontale","Parete Posteriore","Parete Sinistra","Parete Destra"];
-        const C        = 343;
+        const C        = 344; // [m/s] a 20°C, 0m altitudine, 1 atm (dai PDF)
         const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
 
         // ─── MATH ────────────────────────────────────────────────────────────────────
 
-        function roomModes(L, W, H) {
+        // f2 (fine reg. B) = 1875 · √(RT60_medio / V)   [da PDF Rayleigh]
+        function f2regB(rtMedio, V) {
+            return rtMedio > 0 && V > 0 ? 1875 * Math.sqrt(rtMedio / V) : 200;
+        }
+
+        // RT60 medio aritmetico sulle 6 bande test (Sabine)
+        function rtMedio(rt) {
+            const vals = BANDS_S.map(f => rt[f] || 0).filter(v => v > 0);
+            return vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : 0;
+        }
+
+        // Equazione di Rayleigh: fijk = (c/2)·√[(i/L)²+(j/W)²+(k/H)²]
+        // Indici 0..8, f da 20 Hz a f2 dinamica
+        function roomModes(L, W, H, f2) {
+            const fMax = f2 || 300;
             const modes = [];
-            for (let nx=0; nx<=4; nx++) for (let ny=0; ny<=4; ny++) for (let nz=0; nz<=4; nz++) {
+            for (let nx=0; nx<=8; nx++) for (let ny=0; ny<=8; ny++) for (let nz=0; nz<=8; nz++) {
                 if (!nx && !ny && !nz) continue;
                 const f = (C/2) * Math.sqrt((nx/L)**2 + (ny/W)**2 + (nz/H)**2);
-                if (f < 20 || f > 500) continue;
-                const a = [nx>0, ny>0, nz>0].filter(Boolean).length;
-                const type = a===1 ? "assiale" : a===2 ? "tangenziale" : "obliquo";
+                if (f < 20 || f > fMax) continue;
+                const dims = [nx>0, ny>0, nz>0].filter(Boolean).length;
+                const type = dims===1 ? "assiale" : dims===2 ? "tangenziale" : "obliquo";
                 const axis = nx>0&&ny===0&&nz===0?"L" : ny>0&&nx===0&&nz===0?"W" : nz>0&&nx===0&&ny===0?"H" : "mix";
                 modes.push({ nx, ny, nz, freq: Math.round(f*10)/10, type, axis });
             }
             return modes.sort((a,b) => a.freq - b.freq);
+        }
+
+        // Ampiezza modi in [□] secondo il modello dai PDF (tabella Everest adottata a lezione)
+        // Assiali: 100/ordine  Tangenziali: 70/ordine (con algoritmo somma indici)  Obliqui: 50/ordine (decresc. ~8□/somma)
+        function modeAmplitude(nx, ny, nz) {
+            const order = Math.max(nx, ny, nz);
+            const active = [nx, ny, nz].filter(v => v > 0);
+            const dims = active.length;
+            if (order === 0) return 0;
+
+            if (dims === 1) {
+                // ASSIALE: 100 / ordine
+                return 100 / order;
+            } else if (dims === 2) {
+                // TANGENZIALE: base 70/ordine, poi regola somma indici
+                // "a parità di ordine, ampiezza decresce con somma indici"
+                const baseA = 70 / order;
+                const sumIdx = nx + ny + nz; // somma totale
+                const minSum = order * 2;     // somma minima per questo ordine (es. ordine 1→ sum=2)
+                const extraSteps = sumIdx - minSum;
+                // Ogni step extra di somma riduce ~7% dell'ampiezza base (approssimazione tabella)
+                const reduction = extraSteps * 0.07 * baseA;
+                return Math.max(baseA * 0.4, baseA - reduction);
+            } else {
+                // OBLIQUO: base 50/ordine, poi decremento ~8□ per ogni somma oltre il minimo
+                const baseA = 50 / order;
+                const sumIdx = nx + ny + nz;
+                const minSum = order * 3; // minimo per ordine puro (es. 111→sum3, 222→sum6)
+                const extraSteps = sumIdx - minSum;
+                const dec = 8 / order;   // il decremento scala con l'ordine
+                return Math.max(baseA * 0.3, baseA - extraSteps * dec);
+            }
+        }
+
+        // Larghezza di banda attorno a ogni modo: Δf = 2.2 / RT60_medio
+        function deltaf(rtMed) {
+            return rtMed > 0 ? 2.2 / rtMed : 10;
         }
 
         function absorption(surfaces) {
@@ -180,7 +231,7 @@
         }
 
         function roomResponse(L, W, H, rt) {
-            const modes = roomModes(L, W, H);
+            const modes = roomModes(L, W, H, 500); // usa range esteso per la risposta
             const sX = W/2, sY = L*0.38, sZ = H*0.45;
             const freqs = [];
             for (let i=0; i<=120; i++) freqs.push(Math.round(20 * Math.pow(200, i/120) * 10) / 10);
@@ -220,19 +271,32 @@
         function noteLabel(freq) { const {note, oct} = freqToNote(freq); return `${note}${oct}`; }
 
         // ─── PIANO ───────────────────────────────────────────────────────────────────
+        // Il piano è posizionato su scala LOG da 20 a 4000 Hz, allineato al grafico EQ.
+        // Ogni tasto occupa la sua posizione reale in % sul range log.
 
         function Piano({ eqData }) {
+            const F_MIN = 20, F_MAX = 4000;
+            const logMin = Math.log10(F_MIN), logMax = Math.log10(F_MAX);
+            const logRange = logMax - logMin;
+
+            function freqToX(f) {
+                return ((Math.log10(Math.max(f, F_MIN)) - logMin) / logRange) * 100;
+            }
+
             const BLACKS = new Set([1,3,6,8,10]);
-            const s0 = Math.ceil(12*Math.log2(20/440)+57);
-            const s1 = Math.floor(12*Math.log2(4000/440)+57);
+            // Tasti da C0 a B8 — filtrati nel range 20–4000 Hz
+            const s0 = Math.ceil(12*Math.log2(F_MIN/440)+57);
+            const s1 = Math.floor(12*Math.log2(F_MAX/440)+57);
             const keys = [];
             for (let st=s0; st<=s1; st++) {
                 const freq = 440 * Math.pow(2, (st-57)/12);
+                if (freq < F_MIN || freq > F_MAX) continue;
                 const pos = ((st%12)+12)%12;
-                keys.push({ st, freq, isBlack: BLACKS.has(pos), ...freqToNote(freq) });
+                const isBlack = BLACKS.has(pos);
+                const {note, oct} = freqToNote(freq);
+                keys.push({ st, freq, isBlack, note, oct });
             }
             const whites = keys.filter(k => !k.isBlack);
-            const totalW = whites.length;
 
             function lookup(freq) {
                 if (!eqData || !eqData.length) return 0;
@@ -245,42 +309,59 @@
                 if (c >= 0) { const t = c/15; return `rgba(255,${Math.round(120-t*80)},${Math.round(60-t*50)},${0.5+t*0.5})`; }
                 const t = -c/15; return `rgba(${Math.round(20+t*20)},${Math.round(130+t*80)},${Math.round(90+t*130)},${0.45+t*0.45})`;
             }
-            const wPct = 100 / totalW;
-            const bPct = wPct * 0.65;
 
+            // Larghezza di ogni tasto bianco: differenza in % tra freq del tasto e del successivo bianco
             return (
-                <div style={{ marginTop:14 }}>
-                    <div style={{ position:"relative", height:50, width:"100%", overflow:"hidden" }}>
-                        {whites.map((k,i) => {
+                <div style={{ marginTop:10 }}>
+                    <div style={{ position:"relative", height:44, width:"100%", overflow:"hidden", background:"#050905" }}>
+                        {/* Tasti bianchi: larghezza = distanza log fino al prossimo tasto bianco */}
+                        {whites.map((k, i) => {
+                            const xLeft = freqToX(k.freq);
+                            const nextW = whites[i+1];
+                            // larghezza fino al prossimo tasto bianco (o al bordo destra)
+                            const xRight = nextW ? freqToX(nextW.freq) : 100;
+                            const w = Math.max(xRight - xLeft, 0.3);
                             const db = lookup(k.freq);
                             return (
                                 <div key={k.st} style={{
-                                    position:"absolute", left:`${i*wPct}%`, width:`${wPct-0.15}%`, height:"100%",
-                                    background: dBColor(db), border:"1px solid #1a2a1a", borderRadius:1,
-                                    display:"flex", alignItems:"flex-end", justifyContent:"center", paddingBottom:3,
+                                    position:"absolute", left:`${xLeft}%`, width:`${w}%`, height:"100%",
+                                    background: dBColor(db),
+                                    borderRight:"1px solid #0a140a",
+                                    display:"flex", alignItems:"flex-end", justifyContent:"center", paddingBottom:2,
+                                    overflow:"hidden",
                                 }}>
-                                    {k.note==="C" && <span style={{ fontSize:9, color:"#3a6a3a", fontFamily:"monospace" }}>{k.note}{k.oct}</span>}
+                                    {k.note==="C" && (
+                                        <span style={{ fontSize:8, color:"#2a5a2a", fontFamily:"monospace", lineHeight:1 }}>
+                                            {k.note}{k.oct}
+                                        </span>
+                                    )}
                                 </div>
                             );
                         })}
-                        {keys.filter(k => k.isBlack).map(k => {
-                            const wIdx = whites.findIndex(w => w.st === k.st+1);
-                            if (wIdx < 0) return null;
+                        {/* Tasti neri sovrapposti */}
+                        {keys.filter(k=>k.isBlack).map(k => {
+                            const x = freqToX(k.freq);
                             const db = lookup(k.freq);
+                            // larghezza: ~ metà della distanza fra due semiton
+                            const freqPrev = 440 * Math.pow(2, (k.st-1-57)/12);
+                            const freqNext = 440 * Math.pow(2, (k.st+1-57)/12);
+                            const w = Math.max(freqToX(freqNext) - freqToX(freqPrev), 0.3) * 0.55;
                             return (
                                 <div key={k.st} style={{
                                     position:"absolute",
-                                    left:`${wIdx*wPct - bPct/2}%`,
-                                    width:`${bPct}%`, height:"60%",
-                                    background: dBColor(db), border:"1px solid #080e08", borderRadius:1,
+                                    left:`${x - w/2}%`,
+                                    width:`${w}%`, height:"58%",
+                                    background: dBColor(db),
+                                    border:"1px solid #020602",
                                     zIndex:2,
                                 }} />
                             );
                         })}
                     </div>
-                    <div style={{ fontSize:13, color:"#4a7a4a", marginTop:6, display:"flex", gap:14 }}>
+                    <div style={{ fontSize:12, color:"#4a7a4a", marginTop:5, display:"flex", gap:14 }}>
                         <span><span style={{ color:"#ff7040" }}>■</span> picco</span>
                         <span><span style={{ color:"#40c8cc" }}>■</span> buca</span>
+                        <span style={{ color:"#2a5a2a", marginLeft:"auto", fontSize:11 }}>scala logaritmica 20–4000 Hz</span>
                     </div>
                 </div>
             );
@@ -582,6 +663,56 @@
             );
         }
 
+        // ─── PIANO-B ─ tastiera allineata al grafico modi (scala log, range reg.B) ──
+        function PianoB({ fMin, fMax, fToX }) {
+            const BLACKS = new Set([1,3,6,8,10]);
+            const s0 = Math.ceil(12*Math.log2(fMin/440)+57);
+            const s1 = Math.floor(12*Math.log2(fMax/440)+57);
+            const keys = [];
+            for (let st=s0; st<=s1; st++) {
+                const freq = 440 * Math.pow(2, (st-57)/12);
+                if (freq < fMin || freq > fMax) continue;
+                const pos = ((st%12)+12)%12;
+                const isBlack = BLACKS.has(pos);
+                const {note, oct} = freqToNote(freq);
+                keys.push({ st, freq, isBlack, note, oct });
+            }
+            const whites = keys.filter(k => !k.isBlack);
+            return (
+                <div style={{ position:"absolute", bottom:0, left:0, right:0, height:22, pointerEvents:"none" }}>
+                    <svg width="100%" height="22">
+                        {whites.map((k,i) => {
+                            const x = fToX(k.freq);
+                            const next = whites[i+1];
+                            const w = next ? fToX(next.freq)-x : 2;
+                            return (
+                                <g key={k.st}>
+                                    <rect x={`${x}%`} width={`${Math.max(w,0.4)}%`} y={0} height={22}
+                                        fill="#0c1a0c" stroke="#1a3a1a" strokeWidth={0.5} />
+                                    {k.note==="C" && (
+                                        <text x={`${x+w/2}%`} y={18} textAnchor="middle"
+                                            fontSize={9} fill="#3a6a3a" fontFamily="monospace">
+                                            {k.note}{k.oct}
+                                        </text>
+                                    )}
+                                </g>
+                            );
+                        })}
+                        {keys.filter(k=>k.isBlack).map(k => {
+                            const x = fToX(k.freq);
+                            const fP = 440*Math.pow(2,(k.st-1-57)/12);
+                            const fN = 440*Math.pow(2,(k.st+1-57)/12);
+                            const w = Math.max(fToX(fN)-fToX(fP), 0.3)*0.5;
+                            return (
+                                <rect key={k.st} x={`${x-w/2}%`} width={`${w}%`} y={0} height={14}
+                                    fill="#0a0d0a" stroke="#050905" strokeWidth={0.5} />
+                            );
+                        })}
+                    </svg>
+                </div>
+            );
+        }
+
         // ─── APP ─────────────────────────────────────────────────────────────────────
 
         const TABS = [
@@ -686,13 +817,21 @@
             const rtEyring = useMemo(() => ready ? rt60eyring(V, sa, Stot) : {}, [V, sa, Stot, ready]);
             const rtC      = formula === "eyring" ? rtEyring : rtSabine;
 
+            // RT medio reale (media aritmetica delle 6 bande Sabine) — usato per Δf e f2
+            const rtMedVal = useMemo(() => ready ? rtMedio(rtC) : 0.5, [rtC, ready]);
+            // f1 (primo modo) = C/(2·L_max), f2 (fine reg. B) = 1875·√(RT_medio/V)
+            const f1RegB = ready ? Math.round((C/2) / Math.max(L,W,H) * 10) / 10 : 34;
+            const f2RegB = useMemo(() => ready ? f2regB(rtMedVal, V) : 200, [rtMedVal, V, ready]);
+            // Δf larghezza di banda attorno ad ogni modo
+            const Δf     = useMemo(() => deltaf(rtMedVal), [rtMedVal]);
+
             // RT60 da misurazioni fonometriche (media M1/M2/M3)
             const rtMeasRaw = useMemo(() => rt60fromMeasurements(measurements), [measurements]);
             const rtMeas    = measActive ? rtMeasRaw : {}; // disabilitato → dict vuoto
             const saMeas    = useMemo(() => ready ? saFromRT(V, rtMeasRaw) : {}, [V, rtMeasRaw, ready]);
 
             const rtI    = useMemo(() => ready ? rt60ideal(V, wetness) : {}, [V, wetness, ready]);
-            const modes  = useMemo(() => ready ? roomModes(L, W, H)   : [], [L, W, H, ready]);
+            const modes  = useMemo(() => ready ? roomModes(L, W, H, f2RegB) : [], [L, W, H, f2RegB, ready]);
             const eqData = useMemo(() => ready ? roomResponse(L, W, H, rtC) : [], [L, W, H, rtC, ready]);
             const Fs     = useMemo(() => ready ? schroeder(V, rtC[500]) : 200, [V, rtC, ready]);
 
@@ -1335,16 +1474,144 @@
                             <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
                                 {!ready && <Empty />}
                                 {ready && (() => {
-                                    const regs = [
-                                        {id:"A",lo:20,  hi:80,  label:"Regione A — Modale Forte (20–80 Hz)",        color:"#ff8844"},
-                                        {id:"B",lo:80,  hi:200, label:"Regione B — Modale/Transizione (80–200 Hz)", color:"#ffcc44"},
-                                        {id:"C",lo:200, hi:500, label:"Regione C — Transizione (200–500 Hz)",       color:"#44aaff"},
-                                    ];
                                     const filteredModes = modes.filter(m =>
                                         (mType==="all" || m.type===mType) && (mAxis==="all" || m.axis===mAxis)
                                     );
+
+                                    // ── Grafico Rayleigh ─────────────────────────────────────────────
+                                    // Scala LOG 20 Hz → f2RegB, asse Y in dB[□]
+                                    // Le barre si sommano in [□] (lineare) poi si convertono in dB
+                                    const F_MIN_B = 20, F_MAX_B = Math.ceil(f2RegB);
+                                    const logMinB = Math.log10(F_MIN_B), logMaxB = Math.log10(F_MAX_B);
+                                    const logRangeB = logMaxB - logMinB;
+                                    function fToX(f) { return ((Math.log10(Math.max(f,F_MIN_B))-logMinB)/logRangeB)*100; }
+
+                                    // Costruisci griglia di frequenze (quinti di semitono: 2^(1/60))
+                                    // per sommare le ampiezze in [□] su ogni cella
+                                    const GRID_N = 300;
+                                    const grid = [];
+                                    for (let i=0; i<GRID_N; i++) {
+                                        grid.push({ f: F_MIN_B * Math.pow(F_MAX_B/F_MIN_B, i/GRID_N), amp_sq: 0 });
+                                    }
+                                    // Per ogni modo filtrato, somma la sua ampiezza [□] alle celle che cadono entro ±Δf/2
+                                    filteredModes.forEach(m => {
+                                        const amp = modeAmplitude(m.nx, m.ny, m.nz);
+                                        const halfDf = Δf / 2;
+                                        grid.forEach(cell => {
+                                            if (cell.f >= m.freq - halfDf && cell.f <= m.freq + halfDf) {
+                                                cell.amp_sq += amp; // somma in [□]
+                                            }
+                                        });
+                                    });
+                                    // Converti in dB[□]: 20·log10(amp_sq/1)
+                                    const maxAmpSq = Math.max(...grid.map(c => c.amp_sq), 1);
+                                    const chartData = grid.filter(c => c.amp_sq > 0).map(c => ({
+                                        f: Math.round(c.f*10)/10,
+                                        dBsq: Math.round(20*Math.log10(c.amp_sq)*10)/10,
+                                    }));
+                                    // Anche data piena per recharts (inclusi 0)
+                                    const maxDB = Math.round(20*Math.log10(maxAmpSq)*10)/10 + 2;
+
+                                    // Colori per tipo modo
+                                    const modeColor = m => m.type==="assiale"?"#7ac87a":m.type==="tangenziale"?"#e8b040":"#5a9aaa";
+
                                     return <>
-                                        <div style={{ display:"flex", gap:12, marginBottom:6 }}>
+                                        {/* Info parametri */}
+                                        <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8, marginBottom:8 }}>
+                                            {[
+                                                { label:"f₁ reg. B", val:`${f1RegB} Hz`, sub:"primo modo" },
+                                                { label:"f₂ reg. B", val:`${Math.round(f2RegB)} Hz`, sub:`1875·√(RT̄/V)` },
+                                                { label:"Δf", val:`${Δf.toFixed(2)} Hz`, sub:`2.2 / RT̄=${rtMedVal.toFixed(2)}s` },
+                                                { label:"Modi totali", val:modes.length, sub:`fino a ${Math.round(f2RegB)} Hz` },
+                                            ].map(({label,val,sub}) => (
+                                                <div key={label} style={{ background:"#0a180a", border:"1px solid #1e3e1e", borderRadius:5, padding:"8px 10px", textAlign:"center" }}>
+                                                    <div style={{ fontSize:11, color:"#4a8a4a", letterSpacing:2, textTransform:"uppercase" }}>{label}</div>
+                                                    <div style={{ fontSize:18, fontWeight:700, color:"#c8eec8", marginTop:2 }}>{val}</div>
+                                                    <div style={{ fontSize:11, color:"#3a6a3a", fontFamily:"monospace" }}>{sub}</div>
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        {/* Grafico Rayleigh: barre dB[□] su scala log */}
+                                        <div style={{ background:"#070e07", border:"1px solid #1a3a1a", borderRadius:8, padding:"14px 10px 8px" }}>
+                                            <div style={{ fontSize:12, letterSpacing:3, color:"#4a8a4a", textTransform:"uppercase", marginBottom:8 }}>
+                                                Grafico modi reg. B — Ampiezze A[dB□] su scala log Hz
+                                            </div>
+                                            <div style={{ height:220 }}>
+                                                <ResponsiveContainer width="100%" height="100%">
+                                                    <LineChart data={chartData} margin={{ top:4, right:8, bottom:20, left:8 }}>
+                                                        <CartesianGrid strokeDasharray="3 3" stroke="#0f1e0f" />
+                                                        <XAxis dataKey="f" type="number" scale="log"
+                                                            domain={[F_MIN_B, F_MAX_B]}
+                                                            ticks={[20,30,40,50,60,80,100,125,150,187.5].filter(t=>t<=F_MAX_B+5)}
+                                                            tickFormatter={v => v+""}
+                                                            tick={{ fill:"#5a9a5a", fontSize:11 }}
+                                                            height={20} allowDataOverflow={false} />
+                                                        <YAxis tick={{ fill:"#5a9a5a", fontSize:11 }} unit=" dB□" domain={[0, maxDB]} />
+                                                        <Tooltip contentStyle={{ background:"#0b1a0b", border:"1px solid #3a7a3a", fontSize:12, color:"#c8eec8" }}
+                                                            formatter={v=>[`${v} dB□`,"A"]}
+                                                            labelFormatter={f=>`${f} Hz · ${noteLabel(f)}`} />
+                                                        {/* Linea di riferimento f2 */}
+                                                        <ReferenceLine x={f2RegB} stroke="#ff884455" strokeDasharray="4 3"
+                                                            label={{ value:`f₂=${Math.round(f2RegB)}Hz`, position:"insideTopRight", fill:"#ff8844", fontSize:10 }} />
+                                                        <Line type="monotone" dataKey="dBsq" stroke="#cc6030" strokeWidth={0}
+                                                            fill="#cc6030" dot={false} isAnimationActive={false} />
+                                                        {/* Usa area riempita per rappresentare le barre */}
+                                                    </LineChart>
+                                                </ResponsiveContainer>
+                                            </div>
+
+                                            {/* Barre SVG sovrapposte — i veri rettangoli del grafico Rayleigh */}
+                                            <div style={{ position:"relative", height:160, marginTop:4, overflow:"hidden" }}>
+                                                <svg width="100%" height="100%" style={{ position:"absolute", top:0, left:0 }}>
+                                                    {filteredModes.map((m, idx) => {
+                                                        const amp = modeAmplitude(m.nx, m.ny, m.nz);
+                                                        const dB  = 20 * Math.log10(Math.max(amp, 0.1));
+                                                        const col = modeColor(m);
+                                                        const xC  = fToX(m.freq);
+                                                        const xL  = fToX(Math.max(m.freq - Δf/2, F_MIN_B));
+                                                        const xR  = fToX(Math.min(m.freq + Δf/2, F_MAX_B));
+                                                        const barH = Math.max(2, (dB / maxDB) * 150);
+                                                        return (
+                                                            <g key={idx}>
+                                                                {/* zona Δf grigia */}
+                                                                <rect x={`${xL}%`} width={`${xR-xL}%`} y={160-barH} height={barH}
+                                                                    fill={col} fillOpacity={0.15} />
+                                                                {/* barra centrale */}
+                                                                <rect x={`${xC-0.15}%`} width="0.3%" y={160-barH} height={barH}
+                                                                    fill={col} fillOpacity={0.9} />
+                                                            </g>
+                                                        );
+                                                    })}
+                                                    {/* Linea f2 */}
+                                                    <line x1={`${fToX(f2RegB)}%`} x2={`${fToX(f2RegB)}%`}
+                                                        y1={0} y2={160} stroke="#ff8844" strokeWidth={1} strokeDasharray="4 3" />
+                                                </svg>
+                                                {/* Tastiera pianoforte allineata alla stessa scala log */}
+                                                <PianoB fMin={F_MIN_B} fMax={F_MAX_B} fToX={fToX} />
+                                            </div>
+                                            {/* Legenda */}
+                                            <div style={{ display:"flex", gap:14, marginTop:6, flexWrap:"wrap" }}>
+                                                <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                                                    <div style={{ width:12, height:12, background:"#7ac87a" }} />
+                                                    <span style={{ fontSize:12, color:"#5a9a5a" }}>Assiale (100/ord.)</span>
+                                                </div>
+                                                <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                                                    <div style={{ width:12, height:12, background:"#e8b040" }} />
+                                                    <span style={{ fontSize:12, color:"#5a9a5a" }}>Tangenziale (70/ord.)</span>
+                                                </div>
+                                                <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                                                    <div style={{ width:12, height:12, background:"#5a9aaa" }} />
+                                                    <span style={{ fontSize:12, color:"#5a9a5a" }}>Obliquo (50/ord.)</span>
+                                                </div>
+                                                <span style={{ fontSize:11, color:"#3a6a3a", marginLeft:"auto" }}>
+                                                    zona ±Δf/2 = ±{(Δf/2).toFixed(1)} Hz semitrasparente
+                                                </span>
+                                            </div>
+                                        </div>
+
+                                        {/* Filtri */}
+                                        <div style={{ display:"flex", gap:12 }}>
                                             <select onChange={e => setMType(e.target.value)} style={sel}>
                                                 <option value="all">Tutti i tipi</option>
                                                 <option value="assiale">Assiali</option>
@@ -1358,61 +1625,50 @@
                                                 <option value="H">Asse H</option>
                                             </select>
                                         </div>
-                                        <div style={{ fontSize:15, color:"#5a9a5a" }}>{filteredModes.length} modi · Schroeder: {Fs} Hz</div>
-                                        <div style={{ display:"flex", gap:18, flexWrap:"wrap", marginBottom:6 }}>
-                                            <LL color="#7ac87a" label="Assiale" />
-                                            <LL color="#e8b040" label="Tangenziale" />
-                                            <LL color="#5a9aaa" label="Obliquo" />
-                                        </div>
-                                        {regs.map(reg => {
-                                            const rm = filteredModes.filter(m => m.freq>=reg.lo && m.freq<reg.hi);
-                                            if (!rm.length) return null;
-                                            return (
-                                                <div key={reg.id}>
-                                                    <div style={{ display:"flex", alignItems:"center", gap:10, margin:"14px 0 8px" }}>
-                                                        <div style={{ width:4, height:20, background:reg.color, borderRadius:2, flexShrink:0 }} />
-                                                        <span style={{ fontSize:16, color:reg.color, fontWeight:700 }}>{reg.label}</span>
-                                                        <div style={{ flex:1, height:1, background:reg.color+"33" }} />
-                                                        <span style={{ fontSize:13, color:reg.color+"bb", flexShrink:0 }}>{rm.length} modi</span>
+
+                                        {/* Lista modi */}
+                                        <div style={{ maxHeight:400, overflowY:"auto" }}>
+                                            {filteredModes.map((m, i) => {
+                                                const amp = modeAmplitude(m.nx, m.ny, m.nz);
+                                                const dBsq = Math.round(20*Math.log10(Math.max(amp,0.1))*10)/10;
+                                                const col = modeColor(m);
+                                                return (
+                                                    <div key={i} style={{
+                                                        display:"grid", gridTemplateColumns:"90px 100px 60px 60px 1fr 110px",
+                                                        alignItems:"center", gap:10, padding:"7px 12px",
+                                                        background:"#060d06", border:`1px solid ${col}22`,
+                                                        borderLeft:`3px solid ${col}`, borderRadius:4, marginBottom:4,
+                                                    }}>
+                                                        <span style={{ fontSize:16, fontWeight:700, color:col }}>{m.freq}<span style={{ fontSize:12, color:"#3a6a3a" }}> Hz</span></span>
+                                                        <span style={{ fontSize:12, color:"#4a8a4a" }}>({m.nx},{m.ny},{m.nz})</span>
+                                                        <span style={{ fontSize:12, color:"#6a8a6a", textAlign:"right" }}>{amp.toFixed(0)} □</span>
+                                                        <span style={{ fontSize:12, color:col, textAlign:"right", fontWeight:600 }}>{dBsq} dB</span>
+                                                        <div style={{ background:"#0f1a0f", borderRadius:3, height:5 }}>
+                                                            <div style={{ width:`${Math.min(100, amp/100*100)}%`, background:col+"99", height:"100%", borderRadius:3 }} />
+                                                        </div>
+                                                        <span style={{ fontSize:12, color:col, textAlign:"right" }}>
+                                                            {noteLabel(m.freq)} · {m.type.slice(0,3).toUpperCase()}
+                                                        </span>
                                                     </div>
-                                                    {rm.map((m, i) => {
-                                                        const col = m.type==="assiale"?"#7ac87a":m.type==="tangenziale"?"#e8b040":"#5a9aaa";
-                                                        const bw  = m.type==="assiale"?"100%":m.type==="tangenziale"?"58%":"32%";
-                                                        return (
-                                                            <div key={i} style={{
-                                                                display:"grid", gridTemplateColumns:"90px 100px 1fr 120px",
-                                                                alignItems:"center", gap:12, padding:"8px 14px",
-                                                                background:"#060d06", border:`1px solid ${col}33`,
-                                                                borderLeft:`3px solid ${col}`, borderRadius:4, marginBottom:5,
-                                                            }}>
-                                                                <span style={{ fontSize:17, fontWeight:700, color:col }}>{m.freq}<span style={{ fontSize:13, color:"#3a6a3a" }}> Hz</span></span>
-                                                                <span style={{ fontSize:13, color:"#4a8a4a" }}>({m.nx},{m.ny},{m.nz})</span>
-                                                                <div style={{ background:"#0f1a0f", borderRadius:3, height:6 }}>
-                                                                    <div style={{ width:bw, background:col+"99", height:"100%", borderRadius:3 }} />
-                                                                </div>
-                                                                <span style={{ fontSize:13, color:col, textAlign:"right", letterSpacing:1 }}>
-                                                                    {noteLabel(m.freq)} · {m.type.slice(0,3).toUpperCase()}
-                                                                </span>
-                                                            </div>
-                                                        );
-                                                    })}
-                                                </div>
-                                            );
-                                        })}
-                                        {filteredModes.filter(m => m.freq>=500).length>0 && (
-                                            <div>
-                                                <div style={{ display:"flex", alignItems:"center", gap:10, margin:"14px 0 8px" }}>
-                                                    <div style={{ width:4, height:20, background:"#44ff88", borderRadius:2, flexShrink:0 }} />
-                                                    <span style={{ fontSize:16, color:"#44cc70", fontWeight:700 }}>Regione D — Diffuso (&gt;500 Hz)</span>
-                                                    <div style={{ flex:1, height:1, background:"#44cc7033" }} />
-                                                </div>
-                                                <div style={{ fontSize:15, color:"#3a7a3a", padding:"12px 16px",
-                                                    background:"#060d06", border:"1px dashed #1a3a1a", borderRadius:5, lineHeight:1.8 }}>
-                                                    Campo sonoro prevalentemente diffuso (Schroeder: {Fs} Hz).<br/>
-                                                    Il trattamento geometrico è più efficace del calcolo modale.
-                                                </div>
+                                                );
+                                            })}
+                                        </div>
+
+                                        {/* Regione D */}
+                                        <div>
+                                            <div style={{ display:"flex", alignItems:"center", gap:10, margin:"14px 0 8px" }}>
+                                                <div style={{ width:4, height:20, background:"#44ff88", borderRadius:2, flexShrink:0 }} />
+                                                <span style={{ fontSize:16, color:"#44cc70", fontWeight:700 }}>
+                                                    Regione D — Diffuso (f &gt; {Math.round(f2RegB)} Hz)
+                                                </span>
+                                                <div style={{ flex:1, height:1, background:"#44cc7033" }} />
                                             </div>
-                                        )}
+                                            <div style={{ fontSize:14, color:"#3a7a3a", padding:"12px 16px",
+                                                background:"#060d06", border:"1px dashed #1a3a1a", borderRadius:5, lineHeight:1.8 }}>
+                                                Campo sonoro prevalentemente diffuso — Schroeder: {Fs} Hz<br/>
+                                                Intervento con <strong style={{color:"#6aaa6a"}}>pannelli diffusivi (Schroeder QRD)</strong> sulle superfici di prime riflessioni (Live End).
+                                            </div>
+                                        </div>
                                     </>;
                                 })()}
                             </div>
