@@ -446,29 +446,35 @@
         }
 
         // ─── MINI SPARKBAR ───────────────────────────────────────────────────────────
-        // Barra orizzontale multi-banda: mostra α del pannello vs deficit normalizzato
+        // Mostra: barra grigia = deficit SA assoluto per banda
+        //         barra colorata = contributo SA del pannello (m2 × α[f])
+        //         Le barre sono diverse per ogni pannello perché ogni α[f] è diverso
         function SparkBars({ props, neededSA, m2 }) {
-            const maxNeed = Math.max(...BANDS.map(f => neededSA[f] || 0), 0.01);
+            const maxVal = Math.max(
+                ...BANDS.map(f => Math.max(neededSA[f]||0, m2*(props[f]||0))),
+                0.01
+            );
             return (
-                <div style={{ display:"flex", gap:3, alignItems:"flex-end", height:44, marginTop:6 }}>
+                <div style={{ display:"flex", gap:3, alignItems:"flex-end", height:52, marginTop:8 }}>
                     {BANDS.map(f => {
-                        const deficit = neededSA[f] || 0;
-                        const coverage = Math.min(1, m2 * (props[f]||0) / Math.max(deficit, 0.001));
-                        const deficitH = Math.round((deficit / maxNeed) * 38);
-                        const coverH   = Math.round(coverage * deficitH);
-                        const ok = coverage >= 0.99;
+                        const deficit   = neededSA[f] || 0;
+                        const provided  = m2 * (props[f] || 0);
+                        const defH  = Math.round((deficit  / maxVal) * 44);
+                        const provH = Math.round((provided / maxVal) * 44);
+                        const ok    = provided >= deficit * 0.99;
+                        const over  = provided > deficit * 1.05;
                         return (
                             <div key={f} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:1 }}>
-                                <div style={{ width:"100%", position:"relative", height:38 }}>
-                                    {/* deficit bar (grigio) */}
-                                    <div style={{ position:"absolute", bottom:0, width:"100%", height:deficitH,
-                                        background:"#1e3e1e", borderRadius:"2px 2px 0 0" }} />
-                                    {/* coverage bar (verde/giallo) */}
-                                    <div style={{ position:"absolute", bottom:0, width:"100%", height:coverH,
-                                        background: ok ? "#5aaa5a" : coverage>0.6 ? "#aaaa40" : "#aa4a20",
-                                        borderRadius:"2px 2px 0 0", opacity:0.9 }} />
+                                <div style={{ width:"100%", position:"relative", height:44 }}>
+                                    {/* deficit bar — grigio scuro */}
+                                    {deficit > 0 && <div style={{ position:"absolute", bottom:0, width:"100%", height:defH,
+                                        background:"#1e3e1e", borderRadius:"2px 2px 0 0" }} />}
+                                    {/* SA fornito dal pannello — colorato */}
+                                    <div style={{ position:"absolute", bottom:0, width:"100%", height:provH,
+                                        background: over?"#5a9acc": ok?"#5aaa5a":"#aaaa40",
+                                        borderRadius:"2px 2px 0 0", opacity:0.85 }} />
                                 </div>
-                                <span style={{ fontSize:10, color:"#3a6a3a", letterSpacing:0 }}>
+                                <span style={{ fontSize:9, color:"#3a6a3a" }}>
                                     {f>=1000 ? (f/1000)+"k" : f}
                                 </span>
                             </div>
@@ -574,46 +580,208 @@
         }
 
         // ─── TREATMENT SECTION ───────────────────────────────────────────────────────
+        // Previsionale combinato: assorbitori LF + assorbitori MF + diffusori HF lavorano insieme
         function TreatmentSection({ neededSA, sa, rtI, V, Fs }) {
             const [selected, setSelected] = useState(null);
+            const { useState: useS, useMemo: useM } = React;
 
             const totalDeficit = BANDS.reduce((s, f) => s + (neededSA[f]||0), 0);
             const maxDeficitBand = BANDS.reduce((best, f) => (neededSA[f]||0) > (neededSA[best]||0) ? f : best, BANDS[0]);
 
+            // ── Previsionale combinato (ispirato alle guide di correzione acustica) ──
+            // Tre strati che lavorano insieme in parallelo:
+            // 1. Bass traps (angolari) → LF ≤250 Hz (modi assiali, angoli)
+            // 2. Pannelli assorbenti a banda media → 250–2000 Hz
+            // 3. Diffusori (QRD) → HF >1000 Hz (reg. D, live end)
+            const combined = React.useMemo(() => {
+                // Trova il miglior pannello per LF (max α a 63 e 125 Hz)
+                const lfEntries = Object.entries(PANELS).filter(([,p]) => p.type==="absorber");
+                const lfBest = lfEntries.reduce((best,[n,p]) =>
+                    (p[63]+p[125]) > (best.p[63]+best.p[125]) ? {n,p} : best,
+                    {n:lfEntries[0]?.[0], p:lfEntries[0]?.[1]||{}}
+                );
+                // Trova miglior pannello per MF (max α a 500 e 1000 Hz)
+                const mfBest = lfEntries.reduce((best,[n,p]) =>
+                    (p[500]+p[1000]) > (best.p[500]+best.p[1000]) ? {n,p} : best,
+                    {n:lfEntries[0]?.[0], p:lfEntries[0]?.[1]||{}}
+                );
+                // Diffusore
+                const diffEntries = Object.entries(PANELS).filter(([,p]) => p.type==="diffuser");
+                const diffBest = diffEntries[0] ? {n:diffEntries[0][0], p:diffEntries[0][1]} : null;
+
+                // Dimensiona LF: banda critica ≤250 Hz
+                const lfBands = BANDS.filter(f => f<=250);
+                let lfWorst = 0;
+                lfBands.forEach(f => {
+                    const def = neededSA[f]||0; if(def<=0) return;
+                    const req = def / Math.max(lfBest.p[f]||0.001, 0.001);
+                    if(req>lfWorst) lfWorst=req;
+                });
+                const lfM2 = Math.ceil(lfWorst);
+
+                // Calcola SA residuo dopo LF
+                const saAfterLF = {};
+                BANDS.forEach(f => { saAfterLF[f] = (sa[f]||0) + lfM2*(lfBest.p[f]||0); });
+                const rtAfterLF = rt60calc(V, saAfterLF);
+                const neededAfterLF = {};
+                BANDS.forEach(f => {
+                    const c = rtAfterLF[f]>0 ? 0.161*V/rtAfterLF[f] : 0;
+                    const id = rtI[f]>0 ? 0.161*V/rtI[f] : 0;
+                    neededAfterLF[f] = Math.max(0, Math.round((id-c)*10)/10);
+                });
+
+                // Dimensiona MF: bande 250–2000 Hz sul SA residuo post-LF
+                const mfBands = BANDS.filter(f => f>=250 && f<=2000);
+                let mfWorst = 0;
+                mfBands.forEach(f => {
+                    const def = neededAfterLF[f]||0; if(def<=0) return;
+                    const req = def / Math.max(mfBest.p[f]||0.001, 0.001);
+                    if(req>mfWorst) mfWorst=req;
+                });
+                const mfM2 = Math.ceil(mfWorst);
+
+                // SA totale combinato LF+MF
+                const saFinal = {};
+                BANDS.forEach(f => {
+                    saFinal[f] = (sa[f]||0) + lfM2*(lfBest.p[f]||0) + mfM2*(mfBest.p[f]||0);
+                });
+                const rtFinal = rt60calc(V, saFinal);
+
+                // Diffusore: dimensionato sulla parete posteriore (live end) = area della parete più grande
+                // Regola pratica: coprire almeno la larghezza della parete posteriore × altezza udibile
+                const diffM2 = diffBest ? Math.ceil(V**(1/3) * 1.5) : 0;
+
+                return { lfBest, mfBest, diffBest, lfM2, mfM2, diffM2, rtFinal, saFinal };
+            }, [neededSA, sa, rtI, V]);
+
+            const rtCombinedChart = BANDS.map(f => ({
+                f:`${f}Hz`,
+                Attuale: rt60calc(V,sa)[f]||0,
+                Combinato: combined.rtFinal[f]||0,
+                Ideale: rtI[f]||0,
+            }));
+
             return (
                 <Sec title="TRATTAMENTO IDEALE CONSIGLIATO">
-                    {/* Sommario deficit per banda */}
-                    <div style={{ background:"#080e08", border:"1px solid #1a3a1a", borderRadius:6, padding:"12px 16px", marginBottom:8 }}>
+                    {/* Deficit per banda */}
+                    <div style={{ background:"#080e08", border:"1px solid #1a3a1a", borderRadius:6, padding:"12px 16px", marginBottom:12 }}>
                         <div style={{ fontSize:12, letterSpacing:3, color:"#4a8a4a", textTransform:"uppercase", marginBottom:10 }}>Deficit SA per banda (m²Sab)</div>
                         <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:5 }}>
                             {BANDS.map(f => {
-                                const d = neededSA[f] || 0;
-                                const isMax = f === maxDeficitBand && d > 0;
+                                const d = neededSA[f]||0;
+                                const isMax = f===maxDeficitBand && d>0;
                                 return (
-                                    <div key={f} style={{ textAlign:"center", background: isMax?"#1a2a0a":"#0a140a",
+                                    <div key={f} style={{ textAlign:"center", background:isMax?"#1a2a0a":"#0a140a",
                                         border:`1px solid ${isMax?"#4a7a2a":"#152515"}`, borderRadius:4, padding:"6px 2px" }}>
                                         <div style={{ fontSize:11, color:"#4a7a4a" }}>{f>=1000?(f/1000)+"k":f}Hz</div>
-                                        <div style={{ fontSize:15, fontWeight:700, color: d>0?"#cc8830":"#3a7a3a", marginTop:2 }}>
-                                            {d > 0 ? d.toFixed(1) : "✓"}
+                                        <div style={{ fontSize:15, fontWeight:700, color:d>0?"#cc8830":"#3a7a3a", marginTop:2 }}>
+                                            {d>0 ? d.toFixed(1) : "✓"}
                                         </div>
                                     </div>
                                 );
                             })}
                         </div>
                         {totalDeficit > 0 && (
-                            <div style={{ fontSize:13, color:"#5a8a4a", marginTop:10 }}>
-                                Banda critica: <strong style={{ color:"#cc9930" }}>{maxDeficitBand} Hz</strong>
-                                &nbsp;·&nbsp; Deficit totale: <strong style={{ color:"#c8eec8" }}>{totalDeficit.toFixed(1)} m²Sab</strong>
+                            <div style={{ fontSize:13, color:"#5a8a4a", marginTop:8 }}>
+                                Banda critica: <strong style={{color:"#cc9930"}}>{maxDeficitBand} Hz</strong>
+                                &nbsp;·&nbsp; Deficit totale: <strong style={{color:"#c8eec8"}}>{totalDeficit.toFixed(1)} m²Sab</strong>
                             </div>
                         )}
-                        {totalDeficit <= 0 && (
-                            <div style={{ fontSize:13, color:"#5aaa5a", marginTop:8 }}>✓ Nessun deficit — RT60 già entro target su tutte le bande</div>
-                        )}
+                        {totalDeficit <= 0 && <div style={{fontSize:13,color:"#5aaa5a",marginTop:8}}>✓ Nessun deficit — RT60 già entro target</div>}
                     </div>
 
-                    {/* Card per ogni pannello */}
+                    {/* ── PREVISIONALE COMBINATO ── */}
+                    {totalDeficit > 0 && (
+                        <div style={{ background:"#080e08", border:"2px solid #3a6a3a", borderRadius:8, padding:"16px", marginBottom:16 }}>
+                            <div style={{ fontSize:13, letterSpacing:3, color:"#7ac87a", textTransform:"uppercase", marginBottom:14, fontWeight:700 }}>
+                                ⚡ Previsionale combinato
+                            </div>
+                            <div style={{ fontSize:12, color:"#4a7a4a", marginBottom:14, lineHeight:1.7 }}>
+                                I tre strati lavorano <strong style={{color:"#8ae08a"}}>in parallelo</strong> — dimensionati progressivamente sul SA residuo.
+                            </div>
+
+                            {/* Tre strati */}
+                            {[
+                                {
+                                    step:1, label:"Bass trap angolari", range:"LF — 63–250 Hz",
+                                    color:"#e8b040", role:"Ridistribuisce energia dai ventri ai nodi. Posizionamento: angoli dietro le casse (Dead End).",
+                                    name: combined.lfBest.n, props: combined.lfBest.p, m2: combined.lfM2,
+                                },
+                                {
+                                    step:2, label:"Pannelli assorbenti (MF)", range:"MF — 250–2000 Hz",
+                                    color:"#7ac87a", role:"Intervento sul SA residuo dopo LF. Parete Dead End e punti di prime riflessioni.",
+                                    name: combined.mfBest.n, props: combined.mfBest.p, m2: combined.mfM2,
+                                },
+                                ...(combined.diffBest ? [{
+                                    step:3, label:"Diffusori Schroeder (QRD)", range:"HF — >1000 Hz",
+                                    color:"#6a9acc", role:"Sparpaglia le riflessioni sulla Live End (parete di fondo). Alternare orizzontale/verticale.",
+                                    name: combined.diffBest.n, props: combined.diffBest.p, m2: combined.diffM2,
+                                }] : []),
+                            ].map(({step,label,range,color,role,name,props,m2}) => (
+                                <div key={step} style={{ background:"#0a140a", border:`1px solid ${color}44`,
+                                    borderLeft:`4px solid ${color}`, borderRadius:6, padding:"12px 14px", marginBottom:10 }}>
+                                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                                        <div style={{ flex:1 }}>
+                                            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+                                                <div style={{ width:20, height:20, borderRadius:"50%", background:color,
+                                                    display:"flex", alignItems:"center", justifyContent:"center",
+                                                    fontSize:11, fontWeight:700, color:"#050905", flexShrink:0 }}>{step}</div>
+                                                <span style={{ fontSize:15, color:"#c8eec8", fontWeight:700 }}>{label}</span>
+                                                <span style={{ fontSize:12, color:color, marginLeft:4 }}>{range}</span>
+                                            </div>
+                                            <div style={{ fontSize:13, color:"#5a8a5a", lineHeight:1.6 }}>{role}</div>
+                                            {name && <div style={{ fontSize:12, color:"#3a7a3a", marginTop:4 }}>Prodotto: {name}</div>}
+                                        </div>
+                                        <div style={{ textAlign:"right", flexShrink:0, marginLeft:12 }}>
+                                            <div style={{ fontSize:26, fontWeight:700, color }}>{m2 > 0 ? m2 : "—"}</div>
+                                            <div style={{ fontSize:12, color:"#3a6a3a" }}>m²</div>
+                                        </div>
+                                    </div>
+                                    {/* SparkBar del contributo di questo pannello */}
+                                    {m2 > 0 && props && <SparkBars props={props} neededSA={neededSA} m2={m2} />}
+                                    <div style={{ display:"flex", gap:14, fontSize:11, color:"#3a6a3a", marginTop:4 }}>
+                                        <span><span style={{color:"#1e3e1e",fontSize:12}}>█</span> deficit SA</span>
+                                        <span><span style={{color:"#5aaa5a",fontSize:12}}>█</span> coperto</span>
+                                        <span><span style={{color:"#aaaa40",fontSize:12}}>█</span> parziale</span>
+                                        <span><span style={{color:"#5a9acc",fontSize:12}}>█</span> eccesso</span>
+                                    </div>
+                                </div>
+                            ))}
+
+                            {/* Grafico RT60 combinato */}
+                            <div style={{ marginTop:14 }}>
+                                <div style={{ fontSize:12, letterSpacing:2, color:"#4a8a4a", textTransform:"uppercase", marginBottom:8 }}>
+                                    RT60 simulato — trattamento combinato completo
+                                </div>
+                                <div style={{ height:180 }}>
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <LineChart data={rtCombinedChart} margin={{top:4,right:8,bottom:4,left:0}}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#0f1e0f" />
+                                            <XAxis dataKey="f" tick={{fill:"#4a8a4a",fontSize:12}} />
+                                            <YAxis tick={{fill:"#4a8a4a",fontSize:12}} unit="s" domain={[0,"auto"]} />
+                                            <Tooltip contentStyle={{background:"#0b1a0b",border:"1px solid #2a5a2a",fontSize:13,color:"#c8eec8"}} />
+                                            <Line type="monotone" dataKey="Attuale"   stroke="#3a5a3a" strokeWidth={2} dot={{r:3}} strokeDasharray="4 3" />
+                                            <Line type="monotone" dataKey="Combinato" stroke="#7ac87a" strokeWidth={2.5} dot={{r:4,fill:"#7ac87a"}} />
+                                            <Line type="monotone" dataKey="Ideale"    stroke="#e8b040" strokeWidth={2} dot={{r:3}} strokeDasharray="6 3" />
+                                        </LineChart>
+                                    </ResponsiveContainer>
+                                </div>
+                                <div style={{ display:"flex", gap:16, marginTop:6, flexWrap:"wrap" }}>
+                                    {[{col:"#3a5a3a",lbl:"Attuale",dash:true},{col:"#7ac87a",lbl:"Simulato combinato"},{col:"#e8b040",lbl:"Ideale",dash:true}]
+                                        .map(({col,lbl,dash})=>(
+                                        <div key={lbl} style={{display:"flex",alignItems:"center",gap:6}}>
+                                            <div style={{width:20,height:2,background:dash?"none":col,borderTop:dash?`2px dashed ${col}`:"none"}}/>
+                                            <span style={{fontSize:12,color:"#5a8a5a"}}>{lbl}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ── Catalogo pannelli individuali (cliccabili per dettaglio) ── */}
                     <div style={{ fontSize:12, color:"#3a6a3a", marginBottom:10, letterSpacing:1 }}>
-                        Clicca un pannello per vedere la simulazione RT60 post-trattamento
+                        Clicca un pannello per simulazione RT60 individuale
                     </div>
                     {Object.entries(PANELS).map(([name, props]) => (
                         <PanelCard key={name} name={name} props={props}
@@ -622,43 +790,6 @@
                             onClick={() => setSelected(s => s===name ? null : name)}
                         />
                     ))}
-
-                    {/* Sommario per tipologia */}
-                    <div style={{ marginTop:16, borderTop:"1px solid #1a3a1a", paddingTop:16 }}>
-                        <div style={{ fontSize:13, letterSpacing:4, color:"#4a8a4a", textTransform:"uppercase", marginBottom:12 }}>
-                            Minimo per tipologia (peggio caso banda)
-                        </div>
-                        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12 }}>
-                            {[{type:"absorber",label:"Fonoassorbenti",color:"#6aaa6a"},
-                              {type:"reflector",label:"Riflettenti",color:"#aaaa6a"},
-                              {type:"diffuser",label:"Diffusori",color:"#6a9acc"}
-                            ].map(({type,label,color}) => {
-                                const entries = Object.entries(PANELS).filter(([,p]) => p.type===type);
-                                // miglior pannello del tipo = quello che richiede meno m²
-                                let minM2 = Infinity, bestName = "";
-                                entries.forEach(([n, p]) => {
-                                    const { m2 } = panelSizing(p, neededSA);
-                                    if (m2 > 0 && m2 < minM2) { minM2 = m2; bestName = n; }
-                                });
-                                return (
-                                    <div key={type} style={{ background:"#0a180a", border:`1px solid ${color}55`,
-                                        borderRadius:8, padding:"14px 12px", textAlign:"center" }}>
-                                        <div style={{ fontSize:12, color, letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>{label}</div>
-                                        <div style={{ fontSize:26, fontWeight:700, color:"#c8eec8" }}>
-                                            {minM2 === Infinity ? "—" : minM2}
-                                        </div>
-                                        <div style={{ fontSize:13, color:"#5a8a5a" }}>m²</div>
-                                        {bestName && <div style={{ fontSize:11, color:"#3a6a3a", marginTop:4, lineHeight:1.4 }}>{bestName}</div>}
-                                    </div>
-                                );
-                            })}
-                        </div>
-                        <div style={{ fontSize:13, color:"#4a7a4a", marginTop:12, lineHeight:1.8 }}>
-                            Assorbitori → angoli e punti di pressione modi assiali.<br/>
-                            Riflettenti → soffitto fra monitor e sweet spot.<br/>
-                            Diffusori → parete posteriore.
-                        </div>
-                    </div>
                 </Sec>
             );
         }
@@ -754,12 +885,16 @@
                 4000: ["1.35","1.35","1.34"],
             });
             const [showMeas, setShowMeas]     = useState(false);
-            const [measActive, setMeasActive] = useState(true); // toggle influenza misurazioni
+            const [measActive, setMeasActive] = useState(false); // OFF di default
 
             const [showEQ, setShowEQ]   = useState(true);
             const [noteAxis, setNoteAxis] = useState(false);
             const [mType, setMType]     = useState("all");
             const [mAxis, setMAxis]     = useState("all");
+            const [zoomModi, setZoomModi] = useState(1);
+            const [hoveredFreq, setHoveredFreq] = useState(null);
+            const lastTapRef = React.useRef({freq:null, time:0});
+            const modiScrollRef = React.useRef(null);
 
             const L = parseFloat(dims.L) || 0;
             const W = parseFloat(dims.W) || 0;
@@ -1384,25 +1519,15 @@
                                         )}
                                     </Sec>
 
-                                    {/* EQ TOGGLE */}
-                                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-                                        <span style={{ fontSize:14, letterSpacing:3, color:"#5aaa5a", textTransform:"uppercase", fontWeight:700 }}>
-                                            Risposta Frequenza — Sweet Spot
-                                        </span>
-                                        <button onClick={() => setShowEQ(v => !v)} style={{
-                                            background: showEQ?"#0e200e":"#0c0c0c",
-                                            border:`1px solid ${showEQ?"#5a9a5a":"#2a2a2a"}`,
-                                            color: showEQ?"#8ae08a":"#444",
-                                            padding:"6px 16px", fontSize:14, letterSpacing:2,
-                                            cursor:"pointer", borderRadius:4, textTransform:"uppercase", fontFamily:"inherit",
-                                        }}>{showEQ ? "ON" : "OFF"}</button>
-                                    </div>
-
-                                    {showEQ && (
-                                        <div style={{ background:"#070e07", border:"1px solid #1e3e1e", borderRadius:8, padding:18 }}>
-                                            <div style={{ display:"flex", gap:8, marginBottom:12, alignItems:"center" }}>
+                                    {/* RISPOSTA IN FREQUENZA — Sweet Spot */}
+                                    <div style={{ background:"#070e07", border:"1px solid #1e3e1e", borderRadius:8, padding:18 }}>
+                                        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+                                            <span style={{ fontSize:14, letterSpacing:3, color:"#5aaa5a", textTransform:"uppercase", fontWeight:700 }}>
+                                                Risposta Frequenza — Sweet Spot
+                                            </span>
+                                            <div style={{ display:"flex", gap:8, alignItems:"center" }}>
                                                 <span style={{ fontSize:13, color:"#4a8a4a", letterSpacing:2 }}>ASSE:</span>
-                                                {[{v:false,l:"Hz"},{v:true,l:"Note (⅕ semitono)"}].map(({v,l}) => (
+                                                {[{v:false,l:"Hz"},{v:true,l:"Note"}].map(({v,l}) => (
                                                     <button key={l} onClick={() => setNoteAxis(v)} style={{
                                                         background: noteAxis===v ? "#0e200e" : "transparent",
                                                         border:`1px solid ${noteAxis===v?"#5a9a5a":"#222"}`,
@@ -1412,54 +1537,54 @@
                                                     }}>{l}</button>
                                                 ))}
                                             </div>
-
-                                            <div style={{ fontSize:13, color:"#4a8a4a", marginBottom:10 }}>
-                                                Sweet spot: {(W/2).toFixed(2)}m × {(L*0.38).toFixed(2)}m × {(H*0.45).toFixed(2)}m &nbsp;·&nbsp; Schroeder: {Fs} Hz
-                                            </div>
-
-                                            <div style={{ display:"flex", gap:12, flexWrap:"wrap", marginBottom:12 }}>
-                                                {[{id:"A",lo:20,hi:80,col:"#ff8844"},{id:"B",lo:80,hi:200,col:"#ffcc44"},
-                                                  {id:"C",lo:200,hi:1000,col:"#44aaff"},{id:"D",lo:1000,hi:4000,col:"#44ff88"}
-                                                ].map(r => (
-                                                    <div key={r.id} style={{ display:"flex", alignItems:"center", gap:6 }}>
-                                                        <div style={{ width:11, height:11, background:r.col+"99", borderRadius:2 }} />
-                                                        <span style={{ fontSize:13, color:"#5a9a5a" }}>{r.id} {r.lo}–{r.hi>=1000?r.hi/1000+"k":r.hi}Hz</span>
-                                                    </div>
-                                                ))}
-                                            </div>
-
-                                            <div style={{ height:240 }}>
-                                                <ResponsiveContainer width="100%" height="100%">
-                                                    <LineChart data={eqData} margin={{ top:4, right:12, bottom:noteAxis?48:24, left:8 }}>
-                                                        <ReferenceArea x1={20}   x2={80}   fill="#ff884420" fillOpacity={1} />
-                                                        <ReferenceArea x1={80}   x2={200}  fill="#ffcc4420" fillOpacity={1} />
-                                                        <ReferenceArea x1={200}  x2={1000} fill="#44aaff18" fillOpacity={1} />
-                                                        <ReferenceArea x1={1000} x2={4000} fill="#44ff8818" fillOpacity={1} />
-                                                        <ReferenceLine x={80}   stroke="#ffffff15" strokeDasharray="4 4" />
-                                                        <ReferenceLine x={200}  stroke="#ffffff15" strokeDasharray="4 4" />
-                                                        <ReferenceLine x={1000} stroke="#ffffff15" strokeDasharray="4 4" />
-                                                        <ReferenceLine x={Fs}   stroke="#e8b04077" strokeDasharray="6 3" />
-                                                        <CartesianGrid strokeDasharray="3 3" stroke="#0f1e0f" />
-                                                        <XAxis dataKey="freq" type="number" scale="log"
-                                                            domain={[20,4000]}
-                                                            ticks={noteAxis ? noteTicks : hzTicks}
-                                                            tickFormatter={v => noteAxis ? noteLabel(v) : v>=1000?(v/1000)+"k":v+""}
-                                                            tick={{ fill:"#5a9a5a", fontSize:noteAxis?11:14 }}
-                                                            angle={noteAxis?-50:0} textAnchor={noteAxis?"end":"middle"}
-                                                            height={noteAxis?48:24} allowDataOverflow={false} />
-                                                        <YAxis tick={{ fill:"#5a9a5a", fontSize:14 }} unit="dB" domain={[-24,24]} />
-                                                        <Tooltip contentStyle={{ background:"#0b1a0b", border:"1px solid #3a7a3a", fontSize:14, color:"#c8eec8" }}
-                                                            formatter={v => [`${v} dB`,"Livello"]}
-                                                            labelFormatter={f => `${f} Hz · ${noteLabel(f)}`} />
-                                                        <ReferenceLine y={0} stroke="#2a5a2a" strokeDasharray="4 4" />
-                                                        <Line type="monotone" dataKey="dB" stroke="#3ae870" strokeWidth={2} dot={false} isAnimationActive={false} />
-                                                    </LineChart>
-                                                </ResponsiveContainer>
-                                            </div>
-
-                                            <Piano eqData={eqData} />
                                         </div>
-                                    )}
+
+                                        <div style={{ fontSize:13, color:"#4a8a4a", marginBottom:10 }}>
+                                            Sweet spot: {(W/2).toFixed(2)}m × {(L*0.38).toFixed(2)}m × {(H*0.45).toFixed(2)}m &nbsp;·&nbsp; Schroeder: {Fs} Hz
+                                        </div>
+
+                                        <div style={{ display:"flex", gap:12, flexWrap:"wrap", marginBottom:12 }}>
+                                            {[{id:"A",lo:20,hi:80,col:"#ff8844"},{id:"B",lo:80,hi:200,col:"#ffcc44"},
+                                              {id:"C",lo:200,hi:1000,col:"#44aaff"},{id:"D",lo:1000,hi:4000,col:"#44ff88"}
+                                            ].map(r => (
+                                                <div key={r.id} style={{ display:"flex", alignItems:"center", gap:6 }}>
+                                                    <div style={{ width:11, height:11, background:r.col+"99", borderRadius:2 }} />
+                                                    <span style={{ fontSize:13, color:"#5a9a5a" }}>{r.id} {r.lo}–{r.hi>=1000?r.hi/1000+"k":r.hi}Hz</span>
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        <div style={{ height:240 }}>
+                                            <ResponsiveContainer width="100%" height="100%">
+                                                <LineChart data={eqData} margin={{ top:4, right:12, bottom:noteAxis?48:24, left:8 }}>
+                                                    <ReferenceArea x1={20}   x2={80}   fill="#ff884420" fillOpacity={1} />
+                                                    <ReferenceArea x1={80}   x2={200}  fill="#ffcc4420" fillOpacity={1} />
+                                                    <ReferenceArea x1={200}  x2={1000} fill="#44aaff18" fillOpacity={1} />
+                                                    <ReferenceArea x1={1000} x2={4000} fill="#44ff8818" fillOpacity={1} />
+                                                    <ReferenceLine x={80}   stroke="#ffffff15" strokeDasharray="4 4" />
+                                                    <ReferenceLine x={200}  stroke="#ffffff15" strokeDasharray="4 4" />
+                                                    <ReferenceLine x={1000} stroke="#ffffff15" strokeDasharray="4 4" />
+                                                    <ReferenceLine x={Fs}   stroke="#e8b04077" strokeDasharray="6 3" />
+                                                    <CartesianGrid strokeDasharray="3 3" stroke="#0f1e0f" />
+                                                    <XAxis dataKey="freq" type="number" scale="log"
+                                                        domain={[20,4000]}
+                                                        ticks={noteAxis ? noteTicks : hzTicks}
+                                                        tickFormatter={v => noteAxis ? noteLabel(v) : v>=1000?(v/1000)+"k":v+""}
+                                                        tick={{ fill:"#5a9a5a", fontSize:noteAxis?11:14 }}
+                                                        angle={noteAxis?-50:0} textAnchor={noteAxis?"end":"middle"}
+                                                        height={noteAxis?48:24} allowDataOverflow={false} />
+                                                    <YAxis tick={{ fill:"#5a9a5a", fontSize:14 }} unit="dB" domain={[-24,24]} />
+                                                    <Tooltip contentStyle={{ background:"#0b1a0b", border:"1px solid #3a7a3a", fontSize:14, color:"#c8eec8" }}
+                                                        formatter={v => [`${v} dB`,"Livello"]}
+                                                        labelFormatter={f => `${f} Hz · ${noteLabel(f)}`} />
+                                                    <ReferenceLine y={0} stroke="#2a5a2a" strokeDasharray="4 4" />
+                                                    <Line type="monotone" dataKey="dB" stroke="#3ae870" strokeWidth={2} dot={false} isAnimationActive={false} />
+                                                </LineChart>
+                                            </ResponsiveContainer>
+                                        </div>
+
+                                        <Piano eqData={eqData} />
+                                    </div>
 
                                     {/* TRATTAMENTO */}
                                     <TreatmentSection
@@ -1532,80 +1657,239 @@
                                             ))}
                                         </div>
 
-                                        {/* Grafico Rayleigh: barre dB[□] su scala log */}
+                                        {/* Grafico Rayleigh interattivo */}
                                         <div style={{ background:"#070e07", border:"1px solid #1a3a1a", borderRadius:8, padding:"14px 10px 8px" }}>
-                                            <div style={{ fontSize:12, letterSpacing:3, color:"#4a8a4a", textTransform:"uppercase", marginBottom:8 }}>
-                                                Grafico modi reg. B — Ampiezze A[dB□] su scala log Hz
-                                            </div>
-                                            <div style={{ height:220 }}>
-                                                <ResponsiveContainer width="100%" height="100%">
-                                                    <LineChart data={chartData} margin={{ top:4, right:8, bottom:20, left:8 }}>
-                                                        <CartesianGrid strokeDasharray="3 3" stroke="#0f1e0f" />
-                                                        <XAxis dataKey="f" type="number" scale="log"
-                                                            domain={[F_MIN_B, F_MAX_B]}
-                                                            ticks={[20,30,40,50,60,80,100,125,150,187.5].filter(t=>t<=F_MAX_B+5)}
-                                                            tickFormatter={v => v+""}
-                                                            tick={{ fill:"#5a9a5a", fontSize:11 }}
-                                                            height={20} allowDataOverflow={false} />
-                                                        <YAxis tick={{ fill:"#5a9a5a", fontSize:11 }} unit=" dB□" domain={[0, maxDB]} />
-                                                        <Tooltip contentStyle={{ background:"#0b1a0b", border:"1px solid #3a7a3a", fontSize:12, color:"#c8eec8" }}
-                                                            formatter={v=>[`${v} dB□`,"A"]}
-                                                            labelFormatter={f=>`${f} Hz · ${noteLabel(f)}`} />
-                                                        {/* Linea di riferimento f2 */}
-                                                        <ReferenceLine x={f2RegB} stroke="#ff884455" strokeDasharray="4 3"
-                                                            label={{ value:`f₂=${Math.round(f2RegB)}Hz`, position:"insideTopRight", fill:"#ff8844", fontSize:10 }} />
-                                                        <Line type="monotone" dataKey="dBsq" stroke="#cc6030" strokeWidth={0}
-                                                            fill="#cc6030" dot={false} isAnimationActive={false} />
-                                                        {/* Usa area riempita per rappresentare le barre */}
-                                                    </LineChart>
-                                                </ResponsiveContainer>
+                                            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+                                                <div style={{ fontSize:12, letterSpacing:3, color:"#4a8a4a", textTransform:"uppercase" }}>
+                                                    Grafico modi reg. B — Ampiezze A [□]
+                                                </div>
+                                                {/* Zoom control */}
+                                                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                                                    <span style={{ fontSize:11, color:"#3a6a3a" }}>Zoom</span>
+                                                    <input type="range" min="1" max="8" step="0.5" value={zoomModi}
+                                                        onChange={e => setZoomModi(parseFloat(e.target.value))}
+                                                        style={{ width:80, accentColor:"#7ac87a", cursor:"pointer" }} />
+                                                    <span style={{ fontSize:11, color:"#7ac87a", minWidth:24 }}>{zoomModi.toFixed(1)}×</span>
+                                                    {zoomModi > 1 && (
+                                                        <button onClick={() => setZoomModi(1)} style={{
+                                                            background:"#0a140a", border:"1px solid #2a4a2a", color:"#5a9a5a",
+                                                            borderRadius:3, padding:"2px 8px", fontSize:11, cursor:"pointer", fontFamily:"inherit",
+                                                        }}>reset</button>
+                                                    )}
+                                                </div>
                                             </div>
 
-                                            {/* Barre SVG sovrapposte — i veri rettangoli del grafico Rayleigh */}
-                                            <div style={{ position:"relative", height:160, marginTop:4, overflow:"hidden" }}>
-                                                <svg width="100%" height="100%" style={{ position:"absolute", top:0, left:0 }}>
-                                                    {filteredModes.map((m, idx) => {
-                                                        const amp = modeAmplitude(m.nx, m.ny, m.nz);
-                                                        const dB  = 20 * Math.log10(Math.max(amp, 0.1));
-                                                        const col = modeColor(m);
-                                                        const xC  = fToX(m.freq);
-                                                        const xL  = fToX(Math.max(m.freq - Δf/2, F_MIN_B));
-                                                        const xR  = fToX(Math.min(m.freq + Δf/2, F_MAX_B));
-                                                        const barH = Math.max(2, (dB / maxDB) * 150);
-                                                        return (
-                                                            <g key={idx}>
-                                                                {/* zona Δf grigia */}
-                                                                <rect x={`${xL}%`} width={`${xR-xL}%`} y={160-barH} height={barH}
-                                                                    fill={col} fillOpacity={0.15} />
-                                                                {/* barra centrale */}
-                                                                <rect x={`${xC-0.15}%`} width="0.3%" y={160-barH} height={barH}
-                                                                    fill={col} fillOpacity={0.9} />
-                                                            </g>
-                                                        );
-                                                    })}
-                                                    {/* Linea f2 */}
-                                                    <line x1={`${fToX(f2RegB)}%`} x2={`${fToX(f2RegB)}%`}
-                                                        y1={0} y2={160} stroke="#ff8844" strokeWidth={1} strokeDasharray="4 3" />
-                                                </svg>
-                                                {/* Tastiera pianoforte allineata alla stessa scala log */}
-                                                <PianoB fMin={F_MIN_B} fMax={F_MAX_B} fToX={fToX} />
+                                            {/* Contenitore scrollabile — SVG cresce in pixel fisici */}
+                                            <div ref={modiScrollRef} style={{ overflowX:"auto", overflowY:"hidden",
+                                                border:"1px solid #0f1e0f", borderRadius:4 }}>
+                                                {(() => {
+                                                    const BASE_W  = 700;
+                                                    const SVG_W   = Math.round(BASE_W * zoomModi);
+                                                    const SVG_H   = 260;
+                                                    const PIANO_H = 26;
+                                                    const CHART_H = SVG_H - PIANO_H;
+                                                    const PAD_L = 38, PAD_R = 8, PAD_T = 8;
+                                                    const DRAW_W  = SVG_W - PAD_L - PAD_R;
+
+                                                    const maxSumSq2 = Math.max(...grid.map(c=>c.amp_sq), 1);
+                                                    const yTicks = [];
+                                                    for(let v=0; v<=Math.ceil(maxSumSq2/25)*25; v+=25) yTicks.push(v);
+
+                                                    const fToXpx = f => PAD_L + ((Math.log10(Math.max(f,F_MIN_B))-Math.log10(F_MIN_B))/(Math.log10(F_MAX_B)-Math.log10(F_MIN_B)))*DRAW_W;
+                                                    const BAR_W = 3;
+
+                                                    // Doppio tap: zoom 7× e centra la barra nel container
+                                                    function handleSvgClick(e) {
+                                                        const rect = e.currentTarget.getBoundingClientRect();
+                                                        const xPx = (e.clientX - rect.left) * (SVG_W / rect.width);
+                                                        const logF = Math.log10(F_MIN_B) + ((xPx - PAD_L) / DRAW_W) * (Math.log10(F_MAX_B) - Math.log10(F_MIN_B));
+                                                        const fHz = Math.pow(10, logF);
+                                                        // Trova la barra più vicina
+                                                        let nearest = null, bestDist = Infinity;
+                                                        filteredModes.forEach(m => {
+                                                            const d = Math.abs(fHz - m.freq);
+                                                            if (d < bestDist && d < Δf) { bestDist = d; nearest = m; }
+                                                        });
+                                                        if (!nearest) return;
+                                                        const now = Date.now();
+                                                        const last = lastTapRef.current;
+                                                        if (last.freq === nearest.freq && now - last.time < 350) {
+                                                            // Doppio tap — zoom 7× e centra
+                                                            const TARGET_ZOOM = 7;
+                                                            setZoomModi(TARGET_ZOOM);
+                                                            // Calcola la posizione X della barra nel nuovo SVG e centra il container
+                                                            const newSvgW = Math.round(BASE_W * TARGET_ZOOM);
+                                                            const newDrawW = newSvgW - PAD_L - PAD_R;
+                                                            const xBar = PAD_L + ((Math.log10(nearest.freq)-Math.log10(F_MIN_B))/(Math.log10(F_MAX_B)-Math.log10(F_MIN_B)))*newDrawW;
+                                                            // Ritarda il scroll dopo il re-render
+                                                            setTimeout(() => {
+                                                                if (modiScrollRef.current) {
+                                                                    const containerW = modiScrollRef.current.clientWidth;
+                                                                    modiScrollRef.current.scrollLeft = Math.max(0, xBar - containerW / 2);
+                                                                }
+                                                            }, 30);
+                                                            lastTapRef.current = {freq:null, time:0};
+                                                        } else {
+                                                            lastTapRef.current = {freq:nearest.freq, time:now};
+                                                        }
+                                                    }
+
+                                                    return (
+                                                        <svg width={SVG_W} height={SVG_H}
+                                                            style={{ display:"block", fontFamily:"'IBM Plex Mono',monospace", cursor:"crosshair" }}
+                                                            onMouseMove={e => {
+                                                                const rect = e.currentTarget.getBoundingClientRect();
+                                                                const xPx = (e.clientX - rect.left) * (SVG_W / rect.width);
+                                                                const logF = Math.log10(F_MIN_B) + ((xPx - PAD_L) / DRAW_W) * (Math.log10(F_MAX_B) - Math.log10(F_MIN_B));
+                                                                const fHz = Math.pow(10, logF);
+                                                                setHoveredFreq(fHz>=F_MIN_B&&fHz<=F_MAX_B ? fHz : null);
+                                                            }}
+                                                            onMouseLeave={() => setHoveredFreq(null)}
+                                                            onClick={handleSvgClick}>
+
+                                                            <rect x={0} y={0} width={SVG_W} height={SVG_H} fill="#070e07"/>
+
+                                                            {/* Griglia orizzontale */}
+                                                            {yTicks.map(v => {
+                                                                const y = PAD_T + (CHART_H-PAD_T)*(1-v/maxSumSq2);
+                                                                return (
+                                                                    <g key={v}>
+                                                                        <line x1={PAD_L} x2={SVG_W-PAD_R} y1={y} y2={y} stroke="#0f1e0f" strokeWidth={1}/>
+                                                                        <text x={PAD_L-4} y={y+4} textAnchor="end" fontSize={9} fill="#3a6a3a">{v}</text>
+                                                                    </g>
+                                                                );
+                                                            })}
+                                                            <text x={10} y={CHART_H/2} textAnchor="middle" fontSize={9} fill="#4a8a4a"
+                                                                transform={`rotate(-90,10,${CHART_H/2})`}>A [□]</text>
+
+                                                            {/* Griglia verticale Hz */}
+                                                            {[20,25,30,40,50,60,80,100,125,150,175,200,250,300].filter(f=>f<=F_MAX_B+5).map(f => {
+                                                                const x = fToXpx(f);
+                                                                return (
+                                                                    <g key={f}>
+                                                                        <line x1={x} x2={x} y1={PAD_T} y2={CHART_H} stroke="#0f1e0f" strokeWidth={1}/>
+                                                                        <text x={x} y={CHART_H+11} textAnchor="middle" fontSize={8} fill="#3a6a3a">{f}</text>
+                                                                    </g>
+                                                                );
+                                                            })}
+
+                                                            {/* Linea f2 */}
+                                                            {(()=>{
+                                                                const x=fToXpx(f2RegB);
+                                                                return<g>
+                                                                    <line x1={x} x2={x} y1={PAD_T} y2={CHART_H} stroke="#ff8844" strokeWidth={1} strokeDasharray="4 3" opacity={0.5}/>
+                                                                    <text x={x+3} y={PAD_T+10} fontSize={8} fill="#ff8844">f₂={Math.round(f2RegB)}Hz</text>
+                                                                </g>;
+                                                            })()}
+
+                                                            {/* Barre modi — SOLO barre, tooltip separati sotto */}
+                                                            {filteredModes.map((m,idx) => {
+                                                                const amp  = modeAmplitude(m.nx, m.ny, m.nz);
+                                                                const col  = modeColor(m);
+                                                                const xC   = fToXpx(m.freq);
+                                                                const xL   = fToXpx(Math.max(m.freq-Δf/2, F_MIN_B));
+                                                                const xR   = fToXpx(Math.min(m.freq+Δf/2, F_MAX_B));
+                                                                const barH = Math.max(2, (amp/maxSumSq2)*(CHART_H-PAD_T));
+                                                                const isHov= hoveredFreq!==null && Math.abs(hoveredFreq-m.freq)<Δf;
+                                                                return (
+                                                                    <g key={idx}>
+                                                                        <rect x={xL} width={Math.max(xR-xL,1)} y={CHART_H-barH} height={barH}
+                                                                            fill={col} fillOpacity={isHov?0.38:0.13}/>
+                                                                        <rect x={xC-BAR_W/2} width={BAR_W} y={CHART_H-barH} height={barH}
+                                                                            fill={col} fillOpacity={isHov?1:0.88}/>
+                                                                    </g>
+                                                                );
+                                                            })}
+
+                                                            {/* Piano in basso */}
+                                                            {(()=>{
+                                                                const BLACKS=new Set([1,3,6,8,10]);
+                                                                const s0=Math.ceil(12*Math.log2(F_MIN_B/440)+57);
+                                                                const s1=Math.floor(12*Math.log2(F_MAX_B/440)+57);
+                                                                const k2=[];
+                                                                for(let st=s0;st<=s1;st++){
+                                                                    const freq=440*Math.pow(2,(st-57)/12);
+                                                                    if(freq<F_MIN_B||freq>F_MAX_B) continue;
+                                                                    const pos=((st%12)+12)%12;
+                                                                    k2.push({st,freq,isBlack:BLACKS.has(pos),...freqToNote(freq)});
+                                                                }
+                                                                const w2=k2.filter(k=>!k.isBlack);
+                                                                const pY=SVG_H-PIANO_H;
+                                                                return<g>
+                                                                    <rect x={PAD_L} y={pY} width={DRAW_W} height={PIANO_H} fill="#060d06"/>
+                                                                    {w2.map((k,i)=>{
+                                                                        const x=fToXpx(k.freq);
+                                                                        const n=w2[i+1];
+                                                                        const w=Math.max(n?fToXpx(n.freq)-x:4,1);
+                                                                        return<g key={k.st}>
+                                                                            <rect x={x} y={pY} width={w-0.5} height={PIANO_H} fill="#0c180c" stroke="#1a3a1a" strokeWidth={0.5}/>
+                                                                            {k.note==="C"&&<text x={x+w/2} y={pY+PIANO_H-5} textAnchor="middle" fontSize={8} fill="#3a6a3a">{k.note}{k.oct}</text>}
+                                                                        </g>;
+                                                                    })}
+                                                                    {k2.filter(k=>k.isBlack).map(k=>{
+                                                                        const x=fToXpx(k.freq);
+                                                                        const fp=440*Math.pow(2,(k.st-1-57)/12);
+                                                                        const fn=440*Math.pow(2,(k.st+1-57)/12);
+                                                                        const w=Math.max((fToXpx(fn)-fToXpx(fp))*0.52,1);
+                                                                        return<rect key={k.st} x={x-w/2} y={pY} width={w} height={PIANO_H*0.62} fill="#080d08" stroke="#040804" strokeWidth={0.5}/>;
+                                                                    })}
+                                                                </g>;
+                                                            })()}
+
+                                                            {/* Cursore verticale */}
+                                                            {hoveredFreq&&hoveredFreq>=F_MIN_B&&hoveredFreq<=F_MAX_B&&(
+                                                                <line x1={fToXpx(hoveredFreq)} x2={fToXpx(hoveredFreq)}
+                                                                    y1={PAD_T} y2={CHART_H} stroke="#ffffff18" strokeWidth={1}/>
+                                                            )}
+
+                                                            {/* ── TOOLTIPS — ultimo layer, sempre sopra tutto ── */}
+                                                            {filteredModes.map((m,idx) => {
+                                                                const isHov = hoveredFreq!==null && Math.abs(hoveredFreq-m.freq)<Δf;
+                                                                if (!isHov) return null;
+                                                                const amp  = modeAmplitude(m.nx, m.ny, m.nz);
+                                                                const col  = modeColor(m);
+                                                                const xC   = fToXpx(m.freq);
+                                                                const barH = Math.max(2, (amp/maxSumSq2)*(CHART_H-PAD_T));
+                                                                const TIP_H = 40;
+                                                                const TIP_W = 116;
+                                                                // y: sopra la barra, ma mai sopra PAD_T
+                                                                const tipY = Math.max(PAD_T + 2, CHART_H - barH - TIP_H - 4);
+                                                                const tipX = Math.min(Math.max(xC - TIP_W/2, PAD_L + 2), SVG_W - PAD_R - TIP_W - 2);
+                                                                return (
+                                                                    <g key={`tip-${idx}`}>
+                                                                        {/* Gambo verticale dalla cima della barra al tooltip */}
+                                                                        <line x1={xC} x2={xC} y1={CHART_H-barH} y2={tipY+TIP_H}
+                                                                            stroke={col} strokeWidth={1} strokeDasharray="2 2" opacity={0.5}/>
+                                                                        <rect x={tipX} y={tipY} width={TIP_W} height={TIP_H} rx={3}
+                                                                            fill="#071207" stroke={col} strokeWidth={1.2}/>
+                                                                        <text x={tipX+6} y={tipY+14} fontSize={10} fill={col} fontWeight="bold">
+                                                                            {m.freq} Hz  ({m.nx},{m.ny},{m.nz})
+                                                                        </text>
+                                                                        <text x={tipX+6} y={tipY+28} fontSize={9} fill="#8aaa8a">
+                                                                            {amp.toFixed(0)} □  {m.type.slice(0,3).toUpperCase()}  {noteLabel(m.freq)}
+                                                                        </text>
+                                                                        <text x={tipX+6} y={tipY+TIP_H-4} fontSize={8} fill="#3a5a3a">
+                                                                            doppio click → zoom
+                                                                        </text>
+                                                                    </g>
+                                                                );
+                                                            })}
+                                                        </svg>
+                                                    );
+                                                })()}
                                             </div>
+
                                             {/* Legenda */}
-                                            <div style={{ display:"flex", gap:14, marginTop:6, flexWrap:"wrap" }}>
-                                                <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-                                                    <div style={{ width:12, height:12, background:"#7ac87a" }} />
-                                                    <span style={{ fontSize:12, color:"#5a9a5a" }}>Assiale (100/ord.)</span>
-                                                </div>
-                                                <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-                                                    <div style={{ width:12, height:12, background:"#e8b040" }} />
-                                                    <span style={{ fontSize:12, color:"#5a9a5a" }}>Tangenziale (70/ord.)</span>
-                                                </div>
-                                                <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-                                                    <div style={{ width:12, height:12, background:"#5a9aaa" }} />
-                                                    <span style={{ fontSize:12, color:"#5a9a5a" }}>Obliquo (50/ord.)</span>
-                                                </div>
-                                                <span style={{ fontSize:11, color:"#3a6a3a", marginLeft:"auto" }}>
-                                                    zona ±Δf/2 = ±{(Δf/2).toFixed(1)} Hz semitrasparente
+                                            <div style={{ display:"flex", gap:14, marginTop:8, flexWrap:"wrap" }}>
+                                                {[{col:"#7ac87a",lbl:"Assiale (100/ord.)"},{col:"#e8b040",lbl:"Tangenziale (70/ord.)"},{col:"#5a9aaa",lbl:"Obliquo (50/ord.)"}]
+                                                    .map(({col,lbl})=>(
+                                                    <div key={lbl} style={{display:"flex",alignItems:"center",gap:5}}>
+                                                        <div style={{width:12,height:12,background:col}}/>
+                                                        <span style={{fontSize:12,color:"#5a9a5a"}}>{lbl}</span>
+                                                    </div>
+                                                ))}
+                                                <span style={{fontSize:11,color:"#3a6a3a",marginLeft:"auto"}}>
+                                                    ±Δf/2 = ±{(Δf/2).toFixed(1)} Hz
                                                 </span>
                                             </div>
                                         </div>
